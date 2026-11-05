@@ -48,4 +48,6 @@ logs/
 tmp/
 
 # ===== 旧人脸项目遗留的测试图（1MB，V1 不使用）=====
-smart_backend/script/*.jpg
+# 目录已从 smart_backend/script 上移到根目录 script/，规则同步修正
+script/*.jpg
+script/*.png

@@ -3,9 +3,7 @@ from aip import AipSpeech
 
 import base64
 
-from pypinyin.core import lazy_pinyin
-
-from script.wenzhuanpinyin import Style
+from pypinyin import Style, lazy_pinyin
 
 
 class BaiDuFace:
