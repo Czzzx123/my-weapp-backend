@@ -16,8 +16,11 @@ class BannerView(GenericViewSet, ListModelMixin):
         res = super().list(request, *args, **kwargs)
         # 首页展示"最新公告"，必须倒序；此前为升序，永远返回最早一条
         notice = Notice.objects.all().order_by('-create_time').first()
-        serializer = NoticeSerializer(instance=notice)
-        return Response({'code': 100, 'msg': '成功', 'banner': res.data, 'notice': serializer.data})
+        # 无公告时必须返回 null，不能把 None 喂给 serializer
+        # （那样会得到 {"title":"","img":null,"content":""} 的空壳对象，
+        #   下游用 typeof/!==null 判断会误认为"有公告"）
+        notice_data = NoticeSerializer(instance=notice).data if notice else None
+        return Response({'code': 100, 'msg': '成功', 'banner': res.data, 'notice': notice_data})
 
 
 class NoticeView(GenericViewSet, ListModelMixin):
