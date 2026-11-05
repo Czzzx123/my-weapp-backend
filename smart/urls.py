@@ -1,11 +1,9 @@
 from django.urls import path
 from rest_framework.routers import SimpleRouter
 
-from .views import welcome, BannerView, NoticeView
+from .views import BannerView, NoticeView
 
-urlpatterns = [
-    path('welcome/', welcome),
-]
+urlpatterns = []
 
 router = SimpleRouter()
 router.register('banner', BannerView, 'banner')

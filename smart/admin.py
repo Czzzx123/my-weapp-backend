@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.db.models import Count, Sum
 
 from .models import (
-    Welcome, Banner, Notice, UserInfo,
+    Banner, Notice,
     Parent, Student, ParentStudent,
     Course, CourseClass, ClassSession,
     Enrollment, HourLog,
@@ -12,13 +12,6 @@ from .models import (
 # ============================================================
 # 基础内容
 # ============================================================
-
-@admin.register(Welcome)
-class WelcomeAdmin(admin.ModelAdmin):
-    list_display = ('id', 'img', 'order', 'create_time', 'is_delete')
-    list_editable = ('order', 'is_delete')
-    list_filter = ('is_delete',)
-
 
 @admin.register(Banner)
 class BannerAdmin(admin.ModelAdmin):
@@ -31,14 +24,6 @@ class BannerAdmin(admin.ModelAdmin):
 class NoticeAdmin(admin.ModelAdmin):
     list_display = ('id', 'title', 'create_time')
     search_fields = ('title', 'content')
-
-
-@admin.register(UserInfo)
-class UserInfoAdmin(admin.ModelAdmin):
-    """旧社区的遗留表，仅作查看，不参与本项目业务"""
-
-    list_display = ('id', 'name', 'mobile', 'score', 'create_date')
-    search_fields = ('name', 'mobile')
 
 
 # ============================================================

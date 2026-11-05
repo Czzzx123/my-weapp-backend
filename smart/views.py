@@ -1,25 +1,9 @@
-from django.conf import settings
-from django.http import JsonResponse
 from rest_framework.mixins import ListModelMixin
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet
 
-from .models import Welcome, Banner, Notice
+from .models import Banner, Notice
 from .serializer import BannerSerializer, NoticeSerializer
-
-
-# ============================================================
-# 基础接口
-# ============================================================
-
-def welcome(request):
-    """启动页图片"""
-    res = Welcome.objects.all().order_by('-order').first()
-    if not res:
-        return JsonResponse({'code': 102, 'msg': '暂无启动页', 'result': ''})
-    # 域名从配置读取，上线改 .env 的 PUBLIC_BASE_URL 即可，无需改代码
-    img = f'{settings.PUBLIC_BASE_URL}{settings.MEDIA_URL}{res.img}'
-    return JsonResponse({'code': 100, 'msg': '成功', 'result': img})
 
 
 class BannerView(GenericViewSet, ListModelMixin):
