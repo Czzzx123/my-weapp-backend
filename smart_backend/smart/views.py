@@ -27,7 +27,8 @@ class BannerView(GenericViewSet, ListModelMixin):
 
     def list(self, request, *args, **kwargs):
         res = super().list(request, *args, **kwargs)
-        notice = Notice.objects.all().order_by('create_time').first()
+        # 首页展示"最新公告"，必须倒序；此前为升序，永远返回最早一条
+        notice = Notice.objects.all().order_by('-create_time').first()
         serializer = NoticeSerializer(instance=notice)
         return Response({'code': 100, 'msg': '成功', 'banner': res.data, 'notice': serializer.data})
 
@@ -132,7 +133,8 @@ from .serializer import NoticeSerializer
 
 
 class NoticeView(GenericViewSet, ListModelMixin):
-    queryset = Notice.objects.all().order_by('create_time')
+    # 公告列表倒序：最新在前（原为升序，家长看到的是最旧的通知）
+    queryset = Notice.objects.all().order_by('-create_time')
     serializer_class = NoticeSerializer
 
 
