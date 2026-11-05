@@ -15,9 +15,7 @@ django-simpleui==2026.1.13
 # ---- 图片处理（ImageField 必需）----
 pillow==12.3.0
 
-# ---- 旧功能依赖（人脸/语音项目遗留，当前 V1 不使用）----
-baidu-aip==4.16.13
-pypinyin==0.55.0
+# ---- HTTP 客户端（阶段 1 调微信 code2session 用）----
 requests==2.34.2
 
 # ---- 传递依赖（显式锁定，保证可复现）----
