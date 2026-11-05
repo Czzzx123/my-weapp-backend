@@ -1,0 +1,51 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ===== 虚拟环境（118MB，由 requirements.txt 重建）=====
+.venv/
+venv/
+env/
+ENV/
+
+# ===== Django =====
+# 本地开发数据库（含真实数据，不入库；结构由 migrations 保证）
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3.bak-*
+
+# 用户上传的媒体文件（含未成年人照片，严禁入库）
+media/
+
+# 收集的静态文件
+staticfiles/
+
+# ===== 密钥与本地配置（含 AppSecret / SECRET_KEY）=====
+.env
+.env.*
+!.env.example
+
+# ===== IDE =====
+.idea/
+*.iml
+.vscode/
+
+# ===== 系统 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 日志与临时 =====
+*.log
+logs/
+tmp/
+
+# ===== 旧人脸项目遗留的测试图（1MB，V1 不使用）=====
+smart_backend/script/*.jpg

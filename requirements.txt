@@ -1,0 +1,32 @@
+# 未蓝科技 · 智慧教育后端
+# Python 3.13.14 / Django 6.0.6
+# 安装：python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
+# 国内镜像：pip install -r requirements.txt -i https://mirrors.cloud.tencent.com/pypi/simple
+
+# ---- 核心框架 ----
+Django==6.0.6
+djangorestframework==3.17.1
+djangorestframework_simplejwt==5.5.1
+PyJWT==2.13.0
+
+# ---- 管理后台主题 ----
+django-simpleui==2026.1.13
+
+# ---- 图片处理（ImageField 必需）----
+pillow==12.3.0
+
+# ---- 旧功能依赖（人脸/语音项目遗留，当前 V1 不使用）----
+baidu-aip==4.16.13
+pypinyin==0.55.0
+requests==2.34.2
+
+# ---- 传递依赖（显式锁定，保证可复现）----
+asgiref==3.11.1
+sqlparse==0.5.5
+tzdata==2026.2
+certifi==2026.6.17
+chardet==7.4.3
+charset-normalizer==3.4.8
+idna==3.18
+urllib3==2.7.0
+typing_extensions==4.16.0
