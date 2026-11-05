@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.http import JsonResponse
 from rest_framework.mixins import ListModelMixin
 from rest_framework.response import Response
@@ -16,7 +17,8 @@ def welcome(request):
     res = Welcome.objects.all().order_by('-order').first()
     if not res:
         return JsonResponse({'code': 102, 'msg': '暂无启动页', 'result': ''})
-    img = 'http://127.0.0.1:8000/media/' + str(res.img)
+    # 域名从配置读取，上线改 .env 的 PUBLIC_BASE_URL 即可，无需改代码
+    img = f'{settings.PUBLIC_BASE_URL}{settings.MEDIA_URL}{res.img}'
     return JsonResponse({'code': 100, 'msg': '成功', 'result': img})
 
 

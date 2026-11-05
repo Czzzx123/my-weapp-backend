@@ -2,24 +2,53 @@
 Django settings for smart_backend project.
 
 未蓝科技 · 智慧教育 —— 后端配置
+
+敏感配置（SECRET_KEY / 微信 AppSecret）从 .env 读取，不入库。
+首次使用：cp .env.example .env，然后填入真实值。
 """
 
 from pathlib import Path
 import os
 
+from dotenv import load_dotenv
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
+# 加载 .env（文件不存在时静默跳过，取下面的默认值）
+load_dotenv(BASE_DIR / '.env')
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-b@5734wdj=!$3kvgiin)%%=m$d)0lfr=4i&55b_ete4&cf@hi7'
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+def env_bool(name, default=False):
+    """把 'True' / '1' / 'yes' 转成布尔值"""
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() in ('1', 'true', 'yes', 'on')
 
-ALLOWED_HOSTS = ['*']
+
+def env_list(name, default=None):
+    """逗号分隔的字符串转成列表"""
+    val = os.getenv(name)
+    if not val:
+        return default or []
+    return [item.strip() for item in val.split(',') if item.strip()]
+
+
+# ============================================================
+# 安全配置
+# ============================================================
+
+# 生产环境必须在 .env 里换成随机长字符串；缺失时用不安全值兜底，仅够本地开发
+SECRET_KEY = os.getenv(
+    'DJANGO_SECRET_KEY',
+    'django-insecure-dev-only-key-please-set-DJANGO_SECRET_KEY-in-env'
+)
+
+DEBUG = env_bool('DJANGO_DEBUG', True)
+
+# 开发期允许本机访问；上线时在 .env 里写真实域名
+ALLOWED_HOSTS = env_list('DJANGO_ALLOWED_HOSTS', ['127.0.0.1', 'localhost'])
 
 # Application definition
 
@@ -111,3 +140,20 @@ STATIC_URL = 'static/'
 # 开启media访问配置
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
+# ============================================================
+# 微信小程序
+# ============================================================
+
+# AppID / AppSecret 从 .env 读取。
+# 缺失时不要在启动阶段报错——本地开发还没配密钥时也要能跑通其他接口，
+# 真正调用 code2session 的地方（阶段 1.3）再做校验并给出明确提示。
+WECHAT_APPID = os.getenv('WECHAT_APPID', '')
+WECHAT_APPSECRET = os.getenv('WECHAT_APPSECRET', '')
+
+# ============================================================
+# 公开访问地址
+# ============================================================
+
+# 用于拼接图片等资源的完整 URL（小程序端无法使用相对路径）
+PUBLIC_BASE_URL = os.getenv('PUBLIC_BASE_URL', 'http://127.0.0.1:8000').rstrip('/')

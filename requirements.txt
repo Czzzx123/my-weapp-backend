@@ -18,6 +18,9 @@ pillow==12.3.0
 # ---- HTTP 客户端（阶段 1 调微信 code2session 用）----
 requests==2.34.2
 
+# ---- 环境变量（读取 .env 中的密钥，不入库）----
+python-dotenv==1.2.4
+
 # ---- 传递依赖（显式锁定，保证可复现）----
 asgiref==3.11.1
 sqlparse==0.5.5
