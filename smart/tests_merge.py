@@ -20,6 +20,7 @@
    （否则调用方拿它签 JWT，token 里的 user_id 指向已删除记录，后续全 401）
 """
 
+from django.db import IntegrityError
 from django.test import TestCase
 
 from smart import login_service
@@ -199,3 +200,78 @@ class BindMobileMergeTests(TestCase):
         self.assertEqual(survivor.mobile, '13800000001')
         self.assertEqual(
             [s.name for s in survivor.children], ['张小明'])
+
+
+class OpenidUniqueConstraintTests(TestCase):
+    """openid 唯一约束（迁移 0013）带来的连锁影响。
+
+    加约束前 openid 只建索引不唯一，两条账号可以持有同一个 openid。
+    约束加上后，合并流程里「把 openid 从 source 搬到 target」这一步
+    会撞约束 —— 因为搬运的瞬间两条记录同时持有同一个值。
+    """
+
+    def test_merge_never_breaks_on_unique_constraint(self):
+        """合并时 openid 搬运不能触发 UNIQUE 约束。
+
+        这是加约束后立刻暴露的真实 bug：原实现直接把 openid 写给 target
+        再 save，此时 source 还活着占着同一个值，SQLite 直接报
+        UNIQUE constraint failed，整个事务回滚，用户永远登录不进去。
+        """
+        wx_side = Parent.objects.create(openid='o_WX', nickname='微信昵称')
+        sms_side = Parent.objects.create(mobile='13800000001')
+
+        survivor = login_service.resolve_identity(openid='o_WX', mobile='13800000001')
+
+        self.assertEqual(survivor.pk, sms_side.pk)
+        self.assertEqual(survivor.openid, 'o_WX')
+        self.assertEqual(Parent.objects.count(), 1)
+
+    def test_merge_preserves_unionid_too(self):
+        """unionid 走同一套「先释放再写入」的逻辑，一并验证。"""
+        wx_side = Parent.objects.create(openid='o_WX', unionid='u_1')
+        sms_side = Parent.objects.create(mobile='13800000001')
+
+        survivor = login_service.resolve_identity(openid='o_WX', mobile='13800000001')
+
+        self.assertEqual(survivor.unionid, 'u_1')
+
+    def test_resolve_identity_tolerates_concurrent_create(self):
+        """并发场景：两个请求同时走到「都没命中 → 新建」。
+
+        唯一约束会让后到的那个抛 IntegrityError。这不该变成 500 ——
+        另一个请求已经建好了，直接取来用即可。
+        """
+        from unittest.mock import patch
+
+        first = Parent.objects.create(openid='o_RACE')
+
+        # 模拟「查询时还没有这条记录，写的时候已经有了」：
+        # 只让**第一次**查询（by_openid 的初查）返回空。
+        # 注意 mobile 传空时不会有第二次初查，所以不能写成「前两次」。
+        origin = Parent.objects.filter
+
+        def fake_filter(*args, **kwargs):
+            fake_filter.calls += 1
+            if fake_filter.calls == 1:
+                return Parent.objects.none()
+            return origin(*args, **kwargs)
+
+        fake_filter.calls = 0
+
+        with patch.object(Parent.objects, 'filter', side_effect=fake_filter):
+            with patch.object(Parent.objects, 'create',
+                              side_effect=IntegrityError('UNIQUE constraint failed')):
+                result = login_service.resolve_identity(openid='o_RACE')
+
+        self.assertEqual(result.pk, first.pk)
+
+    def test_blank_openid_not_forced_unique(self):
+        """空 openid 不该互相冲突。
+
+        纯手机号账号 openid 是 NULL；SQLite 的 UNIQUE 允许多个 NULL，
+        这条是为了防止将来有人把 null=True 改成 default='' 导致第二个
+        手机号账号建不出来。
+        """
+        Parent.objects.create(mobile='13800000001')
+        Parent.objects.create(mobile='13800000002')
+        self.assertEqual(Parent.objects.filter(openid__isnull=True).count(), 2)

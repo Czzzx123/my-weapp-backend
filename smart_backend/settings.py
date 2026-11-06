@@ -110,9 +110,14 @@ CACHES = {
 # 短信验证码
 # ============================================================
 
-# 开发期固定验证码。个人主体拿不到短信通道，且这是本地联调阶段。
-# 上线前必须置为 False 并接入真实短信服务商，否则任何人 8888 就能登录。
-SMS_DEV_FIXED_CODE = env_bool('SMS_DEV_FIXED_CODE', True)
+# 开发期固定验证码开关。
+#
+# **默认 False，这是安全侧的默认值**：新克隆仓库、或部署时忘了抄 .env 的时候，
+# 短信通道走严格模式（必须真的收到码），不会因为漏配而把登录入口敞开。
+# 本地联调需要「任意手机号 + 8888」时，在自己的 .env 里显式写：
+#     SMS_DEV_FIXED_CODE=True
+# 上线前必须确认为 False，否则任何人输 8888 就能登录任意手机号。
+SMS_DEV_FIXED_CODE = env_bool('SMS_DEV_FIXED_CODE', False)
 SMS_DEV_CODE = os.getenv('SMS_DEV_CODE', '8888')
 
 # 验证码有效期（秒）与重发间隔（秒）
@@ -121,8 +126,11 @@ SMS_RESEND_INTERVAL = 60
 
 # 开发期放宽：固定码模式下允许重复使用同一个验证码、且不限制重发间隔。
 # 否则每测一次登录就要等 60 秒，联调根本没法进行。
-# 仅当 SMS_DEV_FIXED_CODE=True 时生效，上线置 False 后自动恢复严格模式。
-SMS_DEV_RELAX = env_bool('SMS_DEV_RELAX', True)
+#
+# 默认 False，理由同上：这是「安全默认 + 显式开启」。而且 sms._relaxed()
+# 要求两个开关同时为 True 才生效，双重保险。
+# 本地联调时在 .env 里显式写 SMS_DEV_RELAX=True。
+SMS_DEV_RELAX = env_bool('SMS_DEV_RELAX', False)
 
 # 单个验证码允许的最大试错次数，防止暴力枚举 6 位数字
 SMS_MAX_VERIFY_ATTEMPTS = 5

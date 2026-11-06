@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 
 from .models import Parent, ParentStudent, Student
 
@@ -61,6 +61,7 @@ def match_children(parent: Parent) -> list[Student]:
     return students
 
 
+@transaction.atomic
 def _merge_into(target: Parent, source: Parent) -> None:
     """把 source 账号的所有痕迹搬到 target 上，然后删掉 source。
 
@@ -68,6 +69,11 @@ def _merge_into(target: Parent, source: Parent) -> None:
     1. ``ParentStudent`` 绑定关系 —— 孩子不能丢
     2. source 独有的 openid / unionid / mobile —— 身份不能丢
     3. source 的昵称头像 —— 只在 target 没有时才搬，不覆盖已有的
+
+    **必须整体在一个事务里**：中途失败会留下「绑定已迁移、source 还在」
+    或「source 已删、openid 没搬过去」的半合并状态，那比不合并更糟 ——
+    用户下次登录会在两条账号间反复横跳。``source.delete()`` 在最后一步，
+    事务回滚时前面所有迁移操作一并撤销。
     """
     # 1. 绑定关系：孩子不能丢，但也不能撞唯一约束
     #    ParentStudent 有 unique_together(parent, student)，如果两条账号都绑了
@@ -96,7 +102,7 @@ def _merge_into(target: Parent, source: Parent) -> None:
     #    指向同一个物理文件，而 source.delete() 不删文件，之后任一方改头像
     #    都可能把对方正在用的文件删掉。这里传 name 字符串，让 Django 各自持有引用。
     changed = []
-    for field in ('openid', 'unionid', 'mobile', 'nickname'):
+    for field in ('mobile', 'nickname'):
         src_val = getattr(source, field)
         if src_val and not getattr(target, field):
             setattr(target, field, src_val)
@@ -108,6 +114,29 @@ def _merge_into(target: Parent, source: Parent) -> None:
 
     if changed:
         target.save(update_fields=changed)
+
+    # 3. openid / unionid 必须**最后处理，且先释放 source 上的值**。
+    #
+    #    openid 有唯一约束。如果直接 target.openid = source.openid 再 save，
+    #    这一刻 source 还活着、还占着同一个 openid，数据库会直接报
+    #    UNIQUE constraint failed —— 而且是在事务里，整个合并回滚，
+    #    用户永远登录不进去。
+    #
+    #    正确顺序：先把 source 上的唯一值清空（释放占位），再写给 target。
+    #    两步都在同一事务内，任一步失败都会整体回滚，不会出现
+    #    「两边都没有 openid」的中间态被提交。
+    identity_changed = []
+    for field in ('openid', 'unionid'):
+        src_val = getattr(source, field)
+        if src_val and not getattr(target, field):
+            setattr(source, field, None)
+            source.save(update_fields=[field])
+            setattr(target, field, src_val)
+            identity_changed.append(field)
+
+    if identity_changed:
+        target.save(update_fields=identity_changed)
+        changed.extend(identity_changed)
 
     logger.info('账号合并：source=%s → target=%s（迁移字段 %s）',
                 source.id, target.id, changed or '无')
@@ -160,10 +189,23 @@ def resolve_identity(*, openid: str = '', mobile: str = '') -> Parent:
         return by_mobile
 
     # ---- 情况 3：都没命中，新建 ----
-    parent = Parent.objects.create(
-        openid=openid or None,
-        mobile=mobile or None,
-    )
+    try:
+        parent = Parent.objects.create(
+            openid=openid or None,
+            mobile=mobile or None,
+        )
+    except IntegrityError:
+        # openid 有唯一约束，并发场景下（用户连点两次登录、或前端超时重试）
+        # 两个请求可能同时走到这里，后到的那个会撞约束。
+        # 这不是错误 —— 另一个请求已经建好了，直接取来用即可。
+        logger.info('并发创建家长撞上 openid 唯一约束，回查已有记录 openid=%s',
+                    openid[:8] if openid else '-')
+        existing = Parent.objects.filter(openid=openid).first() if openid else None
+        if existing is None:
+            # 撞的如果是 mobile 之外的约束，说明情况超出预期，不能静默吞掉
+            raise
+        return existing
+
     logger.info('新建家长：parent_id=%s openid=%s mobile=%s',
                 parent.id, openid[:8] if openid else '-', mobile or '-')
     return parent

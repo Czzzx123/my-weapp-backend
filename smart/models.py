@@ -69,8 +69,10 @@ class Parent(models.Model):
 
     openid = models.CharField(
         verbose_name='微信 openid', max_length=64,
-        null=True, blank=True, db_index=True,
-        help_text='wx.login 换来的唯一身份，微信登录入口的判断依据')
+        null=True, blank=True, unique=True,
+        help_text='wx.login 换来的唯一身份，微信登录入口的判断依据。'
+                  '必须唯一：用户连点两次登录或网络重试时，'
+                  '并发写入不能产生两条同 openid 的账号')
     unionid = models.CharField(
         verbose_name='微信 unionid', max_length=64,
         null=True, blank=True,

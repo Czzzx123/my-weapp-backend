@@ -15,7 +15,7 @@ import logging
 import os
 
 from django.core.files.base import ContentFile
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,11 @@ AVATAR_SIZE = 200
 
 # 上传文件的字节上限。微信头像原图通常 100-500KB，2MB 已经很宽松。
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
+
+# 像素数上限。字节数小不代表解码后内存占用小 ——
+# 一张 600KB 的纯色 PNG 可以是 14000x14000，解码成 RGBA 要 780MB。
+# 2000x2000 = 400 万像素，对头像是绰绰有余的上限（最终只输出 200x200）。
+MAX_PIXELS = 2000 * 2000
 
 # 只接受这几种格式。Pillow 能打开的不等于业务要收的 ——
 # 比如 TIFF、BMP 能开但没必要支持，反而增加攻击面。
@@ -67,8 +72,24 @@ def process_avatar(uploaded_file) -> ContentFile:
         # 必须 seek(0)，否则读出来是空的
         uploaded_file.seek(0)
         img = Image.open(uploaded_file)
+
+        # 显式检查像素数，而不是等 Pillow 抛异常。
+        # Pillow 的阈值是 2 * MAX_IMAGE_PIXELS（约 1.79 亿像素）才抛错，
+        # 中间那段（8948万 ~ 1.79亿）只发 DecompressionBombWarning 然后照常解码，
+        # 按 RGBA 算也要吃掉 700MB 以上内存。头像根本不需要这么大，
+        # 这里直接用 2000x2000 的宽松上限卡死，从源头杜绝内存放大。
+        width, height = img.size
+        if width * height > MAX_PIXELS:
+            logger.warning('上传图片像素超限 %sx%s（%s 像素），已拒绝',
+                           width, height, width * height)
+            raise AvatarError('图片分辨率太大了，请换一张')
+
         # verify() 会消耗文件指针，之后必须重新打开才能用
         img.verify()
+    except Image.DecompressionBombError:
+        # 兜底：万一 Pillow 在 open 阶段就直接抛（超过 2 倍阈值时会这样）
+        logger.warning('上传图片触发 Pillow 解压炸弹保护，已拒绝')
+        raise AvatarError('图片分辨率太大了，请换一张')
     except (UnidentifiedImageError, OSError, ValueError):
         raise AvatarError('这个文件不是有效的图片')
 
@@ -81,6 +102,17 @@ def process_avatar(uploaded_file) -> ContentFile:
         img = Image.open(uploaded_file)
     except (UnidentifiedImageError, OSError):
         raise AvatarError('图片已损坏，请换一张')
+
+    # 按 EXIF 方向信息摆正，再裁切。
+    #
+    # iPhone 竖着拍的照片，实际像素往往是横躺的（3000x4000 存成 4000x3000），
+    # 靠 EXIF 里的 Orientation 标记告诉看图软件「显示时转 90 度」。
+    # 不处理这一步，我们裁出来的就是横躺画面，人脸直接偏出取景框 ——
+    # 而且转成 WebP 时 EXIF 被丢掉，用户再也没法纠正。
+    try:
+        img = ImageOps.exif_transpose(img)
+    except Exception:  # noqa: BLE001 - EXIF 损坏不该让整个上传失败
+        logger.info('EXIF 方向信息异常，按原始方向继续处理')
 
     # 居中裁成正方形。用 thumbnail 之外的方式是为了精确控制输出尺寸。
     img = _crop_square(img)

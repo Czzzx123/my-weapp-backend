@@ -163,6 +163,57 @@ class UpdateProfileTests(TestCase):
             'a.bmp', buf.read(), content_type='image/bmp')})
         self.assertNotEqual(resp.json()['code'], 100)
 
+    def test_pixel_bomb_rejected(self):
+        """解压炸弹必须被拒，且**不能变成 500**。
+
+        场景：一张 600KB 的纯色 PNG 可以声明 14000x14000（1.96 亿像素），
+        解码成 RGBA 要吃掉约 780MB 内存。字节数检查完全拦不住它。
+
+        DecompressionBombError 直接继承 Exception，既不是 OSError
+        也不是 ValueError，漏掉它就会 500。这里同时验证状态码是 200
+        （业务级拒绝），因为前端 upload.js 对非 200 会走 http 分支。
+        """
+        # 尺寸超过 MAX_PIXELS（2000x2000），但字节数远小于 2MB
+        bomb = make_image_bytes(width=3000, height=3000, fmt='PNG')
+        self.assertLess(len(bomb), avatar_service.MAX_UPLOAD_BYTES,
+                        '构造的测试图应当小于字节上限，否则测不到像素这条路径')
+
+        resp = self._post({'avatar': make_upload('bomb.png', bomb, 'image/png')})
+        self.assertEqual(resp.status_code, 200, '像素超限应当被业务拒绝，而不是 500')
+        self.assertNotEqual(resp.json()['code'], 100)
+        self.parent.refresh_from_db()
+        self.assertFalse(self.parent.avatar)
+
+    def test_pixel_bomb_directly_raises_avatar_error(self):
+        """绕开 view 直接测 service，确保抛的是 AvatarError 而不是裸异常。"""
+        bomb = make_image_bytes(width=3000, height=3000, fmt='PNG')
+        with self.assertRaises(avatar_service.AvatarError):
+            avatar_service.process_avatar(make_upload('bomb.png', bomb, 'image/png'))
+
+    def test_exif_orientation_applied(self):
+        """iPhone 竖拍图（Orientation=6）要先按方向摆正再裁切。
+
+        未处理时：300x100 的横图会被裁成 100x100，
+        再缩放时人脸已经在画面外了。正确做法是 exif_transpose 之后再裁。
+        """
+        img = Image.new('RGB', (300, 100), (10, 200, 90))
+        # 在左半边画红、右半边画蓝，用颜色判断裁切位置
+        img.paste((255, 0, 0), (0, 0, 100, 100))
+        exif = img.getexif()
+        exif[274] = 6   # Orientation: 顺时针旋转 90 度
+        buf = io.BytesIO()
+        img.save(buf, format='JPEG', exif=exif)
+        buf.seek(0)
+
+        out = avatar_service.process_avatar(
+            make_upload('rot.jpg', buf.read(), 'image/jpeg'))
+        result = Image.open(out).convert('RGB')
+        self.assertEqual(result.size, (200, 200))
+        # 摆正后原图的「左半边红色」应落在上方（旋转 90 度后左右变上下）
+        # 这里只断言输出非全绿，证明原图内容被保留且没有裁成单色
+        colors = result.getcolors(maxcolors=100000) or []
+        self.assertGreater(len(colors), 1, '裁切后成了纯色，说明方向处理把人脸裁掉了')
+
     def test_replace_avatar_deletes_old_file(self):
         """换头像要删旧文件，否则 media/avatar 会一直变大。"""
         self._post({'avatar': make_upload()})
