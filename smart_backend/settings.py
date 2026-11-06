@@ -9,6 +9,7 @@ Django settings for smart_backend project.
 
 from pathlib import Path
 import os
+from datetime import timedelta
 
 from dotenv import load_dotenv
 
@@ -63,6 +64,68 @@ INSTALLED_APPS = [
     'smart.apps.SmartConfig',
     'rest_framework'
 ]
+
+# ============================================================
+# DRF 与 JWT
+# ============================================================
+
+REST_FRAMEWORK = {
+    # 默认不强制登录：首页 banner/notice 要匿名可访问。
+    # 需要登录的接口在 view 里显式写 permission_classes。
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'smart.auth.MyJSONWebTokenAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.AllowAny',
+    ],
+    'UNAUTHENTICATED_USER': None,
+    # 统一把异常响应归一成 {code, msg}，否则前端拿不到 code=401 无法触发重新登录
+    'EXCEPTION_HANDLER': 'smart.exceptions.custom_exception_handler',
+}
+
+SIMPLE_JWT = {
+    # token 有效期 30 天。家长端不是高频操作，频繁掉登录体验很差；
+    # 过期后前端会收到 code=401 并跳回登录页。
+    'ACCESS_TOKEN_LIFETIME': timedelta(days=30),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=60),
+    # 本项目不用 refresh 机制，过期就重新登录（微信静默登录成本极低）
+    'ROTATE_REFRESH_TOKENS': False,
+    'AUTH_HEADER_TYPES': ('Bearer',),
+}
+
+# ============================================================
+# 缓存（验证码存这里）
+# ============================================================
+
+# 开发期用内存缓存，进程重启验证码就失效 —— 可接受。
+# 上线换 Redis 只需改这一处，代码里用的是 django.core.cache 标准接口。
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'weilan-sms',
+    }
+}
+
+# ============================================================
+# 短信验证码
+# ============================================================
+
+# 开发期固定验证码。个人主体拿不到短信通道，且这是本地联调阶段。
+# 上线前必须置为 False 并接入真实短信服务商，否则任何人 8888 就能登录。
+SMS_DEV_FIXED_CODE = env_bool('SMS_DEV_FIXED_CODE', True)
+SMS_DEV_CODE = os.getenv('SMS_DEV_CODE', '8888')
+
+# 验证码有效期（秒）与重发间隔（秒）
+SMS_CODE_TTL = 300
+SMS_RESEND_INTERVAL = 60
+
+# 开发期放宽：固定码模式下允许重复使用同一个验证码、且不限制重发间隔。
+# 否则每测一次登录就要等 60 秒，联调根本没法进行。
+# 仅当 SMS_DEV_FIXED_CODE=True 时生效，上线置 False 后自动恢复严格模式。
+SMS_DEV_RELAX = env_bool('SMS_DEV_RELAX', True)
+
+# 单个验证码允许的最大试错次数，防止暴力枚举 6 位数字
+SMS_MAX_VERIFY_ATTEMPTS = 5
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',

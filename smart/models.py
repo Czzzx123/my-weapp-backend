@@ -99,6 +99,31 @@ class Parent(models.Model):
     def __str__(self):
         return f'{self.nickname or self.mobile or "未命名"}({self.get_role_display()})'
 
+    # ---- Django / DRF 认证体系要求的三个属性 ----
+    # Parent 不是 auth.User 的子类，但 DRF 的 IsAuthenticated 权限类
+    # 会检查 request.user.is_authenticated，缺这个属性会直接 AttributeError。
+
+    @property
+    def is_authenticated(self):
+        """已通过 JWT 认证的 Parent 恒为 True（DRF 权限类依赖）。"""
+        return True
+
+    @property
+    def is_anonymous(self):
+        return False
+
+    @property
+    def is_active(self):
+        """账号是否可用。与 Student.status 无关，这里只表达家长账号本身。"""
+        return True
+
+    @property
+    def children(self):
+        """该家长名下的在读学生（按手机号匹配的结果）。"""
+        return Student.objects.filter(
+            parent_students__parent=self, status='active'
+        ).order_by('id')
+
 
 class Student(models.Model):
     """学生（教务在 Admin 登记）
