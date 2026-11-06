@@ -9,11 +9,24 @@ MOBILE_REGEX = r'^1[3-9]\d{9}$'
 
 
 class BannerSerializer(serializers.ModelSerializer):
-    """轮播图表序列化类"""
+    """轮播图表序列化类
+
+    字段显式列出而不是 `fields = '__all__'`：
+    一来 `is_delete` 这类内部字段不该顺带暴露给前端，
+    二来将来给模型加字段时不会「自动泄漏」到接口上。
+
+    `create_time` 显式指定 format：`USE_TZ=True` 之后默认会输出
+    `2026-04-10T14:32:49.786000+08:00` 这种带时区的 ISO 串，
+    前端如果要自己解析会很别扭。统一成 `YYYY-MM-DD`，
+    与 NoticeSerializer 保持一致。
+    """
 
     class Meta:
         model = Banner
-        fields = '__all__'
+        fields = ['id', 'img', 'order', 'create_time']
+        extra_kwargs = {
+            'create_time': {'format': '%Y-%m-%d'},
+        }
 
 
 class NoticeSerializer(serializers.ModelSerializer):

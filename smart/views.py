@@ -1,6 +1,7 @@
 import logging
 import time
 
+import requests
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.mixins import ListModelMixin
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -128,14 +129,24 @@ def login(request):
         try:
             session = code2session(data['wx_code'])
         except WeChatConfigError:
-            # 配置问题不该让用户看到细节
+            # 配置问题不该让用户看到细节（AppID / AppSecret 没配或配错）
+            logger.error('code2session 配置错误，请检查 .env 的 WECHAT_APPID / WECHAT_APPSECRET')
             return fail('服务暂时不可用，请稍后再试', code=500)
         except WeChatError as exc:
-            # 业务失败：前端应重新 wx.login() 换个 code
+            # 业务失败：code 无效、已用过、频率超限等。
+            # errcode 要记下来，否则排查时只能看到「登录凭证已失效」这种笼统提示，
+            # 分不清到底是 40029（过期）还是 40163（重复使用）。
+            logger.warning('code2session 业务失败 errcode=%s errmsg=%s', exc.errcode, exc.errmsg)
             return fail(exc.message)
-        except Exception:
-            # 网络超时等，可重试
+        except requests.RequestException as exc:
+            # 只捕获网络层故障。原来这里写的是 except Exception，
+            # 会把 KeyError / AttributeError 这类编程错误一起吞成「网络不稳定」，
+            # 真正的 bug 被藏起来，日志里也看不到。现在只挡 requests 的异常。
+            logger.warning('code2session 网络故障：%s', exc)
             return fail('网络不太稳定，请重试')
+        # 其余异常（KeyError、编程错误）不在这里捕获 ——
+        # 让它们冒泡成 500 并被 EXCEPTION_HANDLER 记录，
+        # 否则线上出了 bug 却表现为「网络不好」，永远查不到。
 
         parent = login_service.resolve_identity(openid=session['openid'])
         login_service.match_children(parent)
@@ -210,8 +221,7 @@ def update_profile(request):
     # 必须放在 serializer 之前：DRF 的 ImageField 校验要把整个文件读进内存
     # 才能判断是不是图片，一个 200MB 的上传会在这一步直接吃掉内存。
     # multipart 有边界和头部的额外开销，留 512KB 余量。
-    declared_size = int(request.META.get('CONTENT_LENGTH') or 0)
-    if declared_size > avatar_service.MAX_UPLOAD_BYTES + 512 * 1024:
+    if _declared_content_length(request) > avatar_service.MAX_UPLOAD_BYTES + 512 * 1024:
         return fail('图片太大了，请选 2MB 以内的')
 
     serializer = UpdateProfileSerializer(data=request.data)
@@ -257,6 +267,27 @@ def update_profile(request):
     # 返回完整的 payload，前端直接用它刷新本地缓存，不用再发一次 profile
     payload = login_service.build_login_payload(parent, request=request)
     return ok(**payload)
+
+
+def _declared_content_length(request) -> int:
+    """读取请求体声明的字节数，拿不到或非法时返回 0。
+
+    ``CONTENT_LENGTH`` 是**客户端可控的头**，直接 ``int()`` 会被玩：
+    传个 ``abc`` 就是 ValueError → 500。所以这里要兜住。
+
+    返回 0 的含义是「不知道」，不是「空请求」—— chunked 上传
+    （``Transfer-Encoding: chunked``）根本不带这个头，取到的是空字符串。
+    此时前置检查失效属于预期行为，大小限制交给 serializer 的
+    ``ImageField`` 和 ``avatar_service`` 兜底（那两处都在）。
+    """
+    raw_length = request.META.get('CONTENT_LENGTH')
+    if not raw_length:
+        return 0
+    try:
+        return int(raw_length)
+    except (TypeError, ValueError):
+        logger.warning('CONTENT_LENGTH 不是合法数字：%r，跳过前置大小检查', raw_length)
+        return 0
 
 
 def _first_error(errors: dict) -> str:

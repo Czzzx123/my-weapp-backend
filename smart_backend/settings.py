@@ -201,7 +201,18 @@ LANGUAGE_CODE = 'zh-hans'
 TIME_ZONE = 'Asia/Shanghai'
 
 USE_I18N = True
-USE_TZ = False
+
+# 时区感知：数据库存 UTC，展示按 TIME_ZONE 转换。
+#
+# 2026-11-06 批次B 从 False 改为 True。原因：
+#   1. 课表、签到、课时流水都要做时间比较（「今天上没上课」「这周消了几次课」），
+#      naive datetime 在跨时区/夏令时场景下会算错，而且报错往往很隐蔽。
+#   2. 部署到境外服务器时 naive 时间会直接错 8 小时。
+#   3. Django 5+ 的默认值就是 True，社区生态（DRF、SimpleJWT）都按这个假设写。
+#
+# **存量数据已由迁移 0014 处理**：原先是 naive 的北京时间，统一 +8 小时转成 UTC。
+# 新建项目如果不是从 naive 迁移过来的，不需要那个迁移。
+USE_TZ = True
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.0/howto/static-files/

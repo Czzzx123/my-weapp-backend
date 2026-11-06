@@ -278,11 +278,30 @@ def build_login_payload(parent: Parent, request=None) -> dict:
     )
 
     # ImageField 的真值判断和 CharField 不同：无图时是空 FieldFile，bool 为 False
+    #
+    # 但「有值」不等于「文件真的在」。以下情况会让 DB 有记录、磁盘没文件：
+    #   - 手工清理过 media/ 目录
+    #   - 换服务器时只迁了数据库没迁文件
+    #   - 上一版删旧文件的 bug（见 avatar_service 的说明）
+    # 此时 .url 仍然会拼出一个路径，前端拿到 404 只能显示空白 —— 比给个
+    # 默认头像更糟，因为用户会以为是自己设置丢了。所以这里要真去验一下。
     avatar_url = ''
     if parent.avatar:
-        avatar_url = parent.avatar.url
-        if request is not None:
-            avatar_url = request.build_absolute_uri(avatar_url)
+        try:
+            exists = parent.avatar.storage.exists(parent.avatar.name)
+        except Exception:  # noqa: BLE001 - 存储层异常不该拖垮登录流程
+            logger.warning('检查头像文件是否存在时出错 parent_id=%s', parent.id, exc_info=True)
+            exists = False
+
+        if exists:
+            avatar_url = parent.avatar.url
+            if request is not None:
+                avatar_url = request.build_absolute_uri(avatar_url)
+        else:
+            # 不在这里清 DB 字段：可能是临时挂载问题，贸然写库会丢数据。
+            # 只记日志，让运维能看到；返回空串时前端会落到默认头像。
+            logger.warning('头像文件缺失（DB 有记录但磁盘没有）：parent_id=%s name=%s',
+                           parent.id, parent.avatar.name)
 
     return {
         'parent': {
@@ -294,8 +313,10 @@ def build_login_payload(parent: Parent, request=None) -> dict:
             'display_name': default_display_name(parent, children),
             'avatar': avatar_url,
             'role': parent.role,
-            # 昵称和头像都没设置 → 前端据此弹一次「完善资料」引导
-            'has_custom_profile': bool(parent.nickname or parent.avatar),
+            # 昵称和头像都没设置 → 前端据此弹一次「完善资料」引导。
+            # 头像这一项必须看 avatar_url 而不是 parent.avatar ——
+            # 文件丢失时要当作「没头像」，否则用户永远不会再被引导去设头像。
+            'has_custom_profile': bool(parent.nickname or avatar_url),
         },
         'children': [
             {
