@@ -80,3 +80,45 @@ class BindMobileSerializer(serializers.Serializer):
         MOBILE_REGEX,
         error_messages={'invalid': '手机号格式不正确'},
     )
+
+
+class UpdateProfileSerializer(serializers.Serializer):
+    """修改昵称 / 头像。两个字段都可选，只传一个就只改一个。
+
+    为什么不用 ModelSerializer：
+    这里只允许改 nickname 和 avatar 两个字段，openid / mobile / role
+    绝不能让客户端碰。Serializer 白名单比 ModelSerializer 的 exclude 更安全。
+
+    avatar 用 ImageField 而不是 FileField —— DRF 会在这里做一次
+    「是不是图片」的校验。自定义的 avatar_service 还会再验一次并压缩，
+    两层都留着：DRF 这层先挡掉明显的非图片，减少 Pillow 被无效数据喂的概率。
+    """
+
+    nickname = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=32,
+        error_messages={
+            'max_length': '昵称最多 32 个字',
+        },
+    )
+    avatar = serializers.ImageField(
+        required=False,
+        # DRF 默认报「请上传有效图片。您上传的该文件不是图片或者图片已经损坏。」
+        # 这句是英文机翻，语病明显。换成正常中文。
+        error_messages={
+            'invalid': '这个文件不是有效的图片，请换一张',
+            'no_name': '图片文件名缺失，请重新选择',
+        },
+    )
+
+    def validate_nickname(self, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError('昵称不能为空')
+        return value
+
+    def validate(self, attrs):
+        if not attrs:
+            raise serializers.ValidationError('请提供要修改的昵称或头像')
+        return attrs

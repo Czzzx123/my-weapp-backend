@@ -90,12 +90,22 @@ def _merge_into(target: Parent, source: Parent) -> None:
                     source.id, moved, target.id)
 
     # 2. 身份与资料：source 有、target 没有的才搬
+    #
+    #    注意 avatar 是 ImageField，真值是 FieldFile 而不是字符串，
+    #    不能直接 `setattr(target, 'avatar', source.avatar)` —— 那会让两条记录
+    #    指向同一个物理文件，而 source.delete() 不删文件，之后任一方改头像
+    #    都可能把对方正在用的文件删掉。这里传 name 字符串，让 Django 各自持有引用。
     changed = []
-    for field in ('openid', 'unionid', 'mobile', 'nickname', 'avatar'):
+    for field in ('openid', 'unionid', 'mobile', 'nickname'):
         src_val = getattr(source, field)
         if src_val and not getattr(target, field):
             setattr(target, field, src_val)
             changed.append(field)
+
+    if source.avatar and not target.avatar:
+        target.avatar.name = source.avatar.name
+        changed.append('avatar')
+
     if changed:
         target.save(update_fields=changed)
 
@@ -186,11 +196,38 @@ def bind_mobile(parent: Parent, mobile: str) -> Parent:
     return survivor
 
 
-def build_login_payload(parent: Parent) -> dict:
+def default_display_name(parent: Parent, children: list[Student]) -> str:
+    """未设置昵称时的展示名兜底。
+
+    规则（2026-11-06 与用户确认）：
+      1. 用户设置过 nickname  → 用用户的
+      2. 没设置但有孩子       → 「张小明家长」
+      3. 没设置也没孩子       → 「家长」
+
+    为什么不把「家长」直接写进 nickname 字段：
+    那样就分不清「用户自己起名叫家长」和「系统默认值」，
+    以后做「引导设置昵称」时无法判断该不该弹窗。
+
+    「孩子名 + 家长」这个叫法来自学校常用称呼，家长一看就有辨识度，
+    而且解决了爸妈两个账号都叫「家长」分不清谁是谁的问题。
+    """
+    if parent.nickname:
+        return parent.nickname
+    if children:
+        return f'{children[0].name}家长'
+    return '家长'
+
+
+def build_login_payload(parent: Parent, request=None) -> dict:
     """组装登录接口的返回体。
 
     前端要靠 ``need_mobile`` 决定是否弹「补手机号」引导，
     靠 ``children`` 是否为空决定首页显示孩子卡片还是空态。
+
+    Args:
+        request: 传入后会用 ``build_absolute_uri`` 把头像拼成绝对地址。
+            **真机必须传** —— 相对路径 ``/media/avatar/x.webp`` 在小程序里
+            会被当成包内资源，图片显示空白。这与 Banner 踩的是同一个坑。
     """
     children = list(
         Student.objects.filter(
@@ -198,13 +235,25 @@ def build_login_payload(parent: Parent) -> dict:
         ).order_by('id')
     )
 
+    # ImageField 的真值判断和 CharField 不同：无图时是空 FieldFile，bool 为 False
+    avatar_url = ''
+    if parent.avatar:
+        avatar_url = parent.avatar.url
+        if request is not None:
+            avatar_url = request.build_absolute_uri(avatar_url)
+
     return {
         'parent': {
             'id': parent.id,
             'mobile': parent.mobile or '',
+            # nickname 保持「用户真实设置的值」，未设置就是空串，不塞默认值
             'nickname': parent.nickname or '',
-            'avatar': parent.avatar or '',
+            # display_name 是给 UI 直接显示的兜底结果，前端不用自己拼
+            'display_name': default_display_name(parent, children),
+            'avatar': avatar_url,
             'role': parent.role,
+            # 昵称和头像都没设置 → 前端据此弹一次「完善资料」引导
+            'has_custom_profile': bool(parent.nickname or parent.avatar),
         },
         'children': [
             {

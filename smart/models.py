@@ -80,11 +80,16 @@ class Parent(models.Model):
         null=True, blank=True, db_index=True,
         help_text='孩子绑定的匹配依据，非唯一（二孩家庭同号）')
     nickname = models.CharField(
-        verbose_name='昵称', max_length=32, blank=True, default='')
-    avatar = models.CharField(
-        verbose_name='头像 URL', max_length=255,
+        verbose_name='昵称', max_length=32, blank=True, default='',
+        help_text='用户主动填写的昵称。留空表示未设置，展示时按「孩子名+家长」兜底')
+    avatar = models.ImageField(
+        verbose_name='头像', upload_to='avatar/',
         null=True, blank=True,
-        help_text='微信头像本就是外链，直接存 URL 字符串')
+        help_text=(
+            '用户上传的自己服务器上的图片。'
+            '注意：不能用微信返回的临时路径（http://tmp/... 会失效），'
+            '也不能用 wx.getUserProfile 拿的灰头像 —— 该接口自基础库 2.27.1 起已失效'
+        ))
     role = models.CharField(
         verbose_name='角色', max_length=16,
         choices=ROLE_CHOICES, default='parent')

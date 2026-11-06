@@ -1,3 +1,6 @@
+import logging
+import time
+
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.mixins import ListModelMixin
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -7,7 +10,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from libs.wechat import WeChatConfigError, WeChatError, code2session
 
-from . import login_service, sms
+from . import avatar_service, login_service, sms
 from .models import Banner, Notice
 from .serializer import (
     BannerSerializer,
@@ -15,7 +18,10 @@ from .serializer import (
     LoginSerializer,
     NoticeSerializer,
     SendSmsSerializer,
+    UpdateProfileSerializer,
 )
+
+logger = logging.getLogger(__name__)
 
 # 业务成功码，与前端 request.js 的约定一致
 OK = 100
@@ -135,7 +141,7 @@ def login(request):
         login_service.match_children(parent)
 
     refresh = RefreshToken.for_user(parent)
-    payload = login_service.build_login_payload(parent)
+    payload = login_service.build_login_payload(parent, request=request)
 
     return ok(token=str(refresh.access_token), **payload)
 
@@ -145,7 +151,7 @@ def login(request):
 def profile(request):
     """返回当前登录家长的完整信息与孩子列表。"""
     parent = request.user
-    payload = login_service.build_login_payload(parent)
+    payload = login_service.build_login_payload(parent, request=request)
     return ok(**payload)
 
 
@@ -170,7 +176,7 @@ def bind_mobile(request):
 
     # 用存活账号重签 token（可能与原 token 指向同一个 id，也可能换了）
     refresh = RefreshToken.for_user(survivor)
-    payload = login_service.build_login_payload(survivor)
+    payload = login_service.build_login_payload(survivor, request=request)
 
     return ok(token=str(refresh.access_token), **payload)
 
@@ -184,6 +190,73 @@ def logout(request):
     删掉本地 token 即可。这里只做语义占位，方便前端统一调用。
     """
     return ok(message='已退出')
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def update_profile(request):
+    """修改昵称 / 头像。两个字段都可选，支持只传一个。
+
+    为什么必须是 multipart：
+    头像走 ``wx.uploadFile`` 传二进制，不用 base64 —— base64 会让体积膨胀
+    约 33%，2MB 的图会变成 2.7MB，很容易撞到小程序的请求体上限。
+
+    **头像的坑（务必记住）**：
+    微信 ``chooseAvatar`` 返回的是 ``http://tmp/xxx`` 这样的**临时路径**，
+    小程序重启后失效。绝不能把它当 URL 存进数据库，必须先上传到我们自己的
+    服务器。这也是为什么这里要接收文件而不是接收一个 URL 字符串。
+    """
+    # 先按 Content-Length 挡一道。
+    # 必须放在 serializer 之前：DRF 的 ImageField 校验要把整个文件读进内存
+    # 才能判断是不是图片，一个 200MB 的上传会在这一步直接吃掉内存。
+    # multipart 有边界和头部的额外开销，留 512KB 余量。
+    declared_size = int(request.META.get('CONTENT_LENGTH') or 0)
+    if declared_size > avatar_service.MAX_UPLOAD_BYTES + 512 * 1024:
+        return fail('图片太大了，请选 2MB 以内的')
+
+    serializer = UpdateProfileSerializer(data=request.data)
+    if not serializer.is_valid():
+        return fail(_first_error(serializer.errors))
+
+    parent = request.user
+    data = serializer.validated_data
+    changed = []
+
+    # ---- 昵称 ----
+    if 'nickname' in data:
+        parent.nickname = data['nickname']
+        changed.append('nickname')
+
+    # ---- 头像 ----
+    if 'avatar' in data:
+        try:
+            content = avatar_service.process_avatar(data['avatar'])
+        except avatar_service.AvatarError as exc:
+            return fail(str(exc))
+
+        # 先**把旧文件路径存成字符串**，不能存 FieldFile 对象。
+        # 这是个很隐蔽的坑：FieldFile 内部共享 name 属性，
+        # 执行 parent.avatar.save(...) 之后 old_avatar.name 也会变成新文件名，
+        # 于是「删旧文件」实际删的是刚存好的新文件 —— 头像传上去立刻消失。
+        old_avatar_path = parent.avatar.path if parent.avatar else ''
+
+        # 文件名用 parent.id + 时间戳。时间戳是为了绕过图片缓存：
+        # 同名 URL 会让小程序继续显示旧图，用户以为没生效。
+        filename = f'parent_{parent.id}_{int(time.time())}.webp'
+        parent.avatar.save(filename, content, save=False)
+        changed.append('avatar')
+
+        parent.save(update_fields=changed)
+        avatar_service.delete_avatar_file_by_path(old_avatar_path)
+    else:
+        if changed:
+            parent.save(update_fields=changed)
+
+    logger.info('家长 %s 修改资料：%s', parent.id, changed or '无')
+
+    # 返回完整的 payload，前端直接用它刷新本地缓存，不用再发一次 profile
+    payload = login_service.build_login_payload(parent, request=request)
+    return ok(**payload)
 
 
 def _first_error(errors: dict) -> str:
