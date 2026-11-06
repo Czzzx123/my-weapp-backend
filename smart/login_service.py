@@ -9,6 +9,13 @@
 - 孩子绑定靠 **手机号自动匹配**：Parent.mobile == Student.mobile
 - 一个家长可对应多个孩子（二孩家庭同号）
 - 未绑定也能登录，只是 children 为 []
+
+身份合并（2026-11-06 定稿）
+---------------------------
+同一个人可能先后用两个入口登录，产生两条 Parent：
+先微信（有 openid 无 mobile）、先手机号（有 mobile 无 openid）。
+两条都要认成「一个人」，靠 :func:`resolve_identity` 自动合并。
+合并后必须用返回值重新签发 JWT，否则 token 里的 user_id 指向已删除的记录。
 """
 
 from __future__ import annotations
@@ -20,52 +27,6 @@ from django.db import transaction
 from .models import Parent, ParentStudent, Student
 
 logger = logging.getLogger(__name__)
-
-
-def get_or_create_parent(*, openid: str = '', mobile: str = '') -> tuple[Parent, bool]:
-    """按 openid 或 mobile 找到家长，找不到就建一个。
-
-    查找优先级：**openid 优先**。
-    因为同一个人的 openid 是稳定唯一的，而手机号可能变（换号、填错）。
-
-    Returns:
-        ``(parent, created)``
-    """
-    parent = None
-
-    if openid:
-        parent = Parent.objects.filter(openid=openid).first()
-
-    if parent is None and mobile:
-        # 该手机号可能已被「手机号先登录」的账号占用
-        parent = Parent.objects.filter(mobile=mobile).first()
-        # 顺着手机号找到老账号时，把 openid 补上，实现两个入口合并成同一个人
-        if parent and openid and not parent.openid:
-            parent.openid = openid
-            parent.save(update_fields=['openid'])
-            logger.info('为既有家长补 openid：parent_id=%s', parent.id)
-
-    if parent is None:
-        parent = Parent.objects.create(
-            openid=openid or None,
-            mobile=mobile or None,
-        )
-        logger.info('新建家长：parent_id=%s openid=%s mobile=%s',
-                    parent.id, openid[:8] if openid else '-', mobile or '-')
-        return parent, True
-
-    # 已有账号：补齐缺失的字段（比如微信登录的用户后来补了手机号）
-    changed = []
-    if openid and not parent.openid:
-        parent.openid = openid
-        changed.append('openid')
-    if mobile and not parent.mobile:
-        parent.mobile = mobile
-        changed.append('mobile')
-    if changed:
-        parent.save(update_fields=changed)
-
-    return parent, False
 
 
 def match_children(parent: Parent) -> list[Student]:
@@ -100,26 +61,129 @@ def match_children(parent: Parent) -> list[Student]:
     return students
 
 
+def _merge_into(target: Parent, source: Parent) -> None:
+    """把 source 账号的所有痕迹搬到 target 上，然后删掉 source。
+
+    迁移内容三样，漏一样都会丢数据：
+    1. ``ParentStudent`` 绑定关系 —— 孩子不能丢
+    2. source 独有的 openid / unionid / mobile —— 身份不能丢
+    3. source 的昵称头像 —— 只在 target 没有时才搬，不覆盖已有的
+    """
+    # 1. 绑定关系：孩子不能丢，但也不能撞唯一约束
+    #    ParentStudent 有 unique_together(parent, student)，如果两条账号都绑了
+    #    同一个孩子（例如都匹配到同一个 Student.mobile），直接 update 改外键会抛
+    #    IntegrityError。所以先剔掉重复的那几条（target 已经有了，等价），再迁剩下的。
+    target_student_ids = set(
+        ParentStudent.objects.filter(parent=target).values_list('student_id', flat=True)
+    )
+    if target_student_ids:
+        dup_deleted, _ = ParentStudent.objects.filter(
+            parent=source, student_id__in=target_student_ids
+        ).delete()
+        if dup_deleted:
+            logger.info('账号合并：source=%s 有 %s 条绑定与 target 重复，丢弃',
+                        source.id, dup_deleted)
+    # 剩下的都是 target 没有的，安全迁移（用 update 保留原 bind_time）
+    moved = ParentStudent.objects.filter(parent=source).update(parent=target)
+    if moved:
+        logger.info('账号合并：source=%s 迁移 %s 条孩子绑定到 target=%s',
+                    source.id, moved, target.id)
+
+    # 2. 身份与资料：source 有、target 没有的才搬
+    changed = []
+    for field in ('openid', 'unionid', 'mobile', 'nickname', 'avatar'):
+        src_val = getattr(source, field)
+        if src_val and not getattr(target, field):
+            setattr(target, field, src_val)
+            changed.append(field)
+    if changed:
+        target.save(update_fields=changed)
+
+    logger.info('账号合并：source=%s → target=%s（迁移字段 %s）',
+                source.id, target.id, changed or '无')
+    source.delete()
+
+
+def resolve_identity(*, openid: str = '', mobile: str = '') -> Parent:
+    """按 openid / mobile 找到唯一的家长账号，必要时合并，返回**存活的那个**。
+
+    这是「自动合并」的核心。规则如下：
+
+    - 只命中 1 个  → 直接用（顺手补齐缺失字段）
+    - 命中 2 个    → 合并成一个（同一个人的两半）
+    - 都没命中      → 新建
+
+    两个都命中时，**保留 mobile 那条**（通常是教务登记过、或老用户），
+    把 openid 那条并进去。理由：mobile 关联着孩子绑定，是更完整的那一半。
+
+    **调用方必须用它返回的 Parent 重新签发 JWT** —— 合并可能删掉了
+    你 JWT 里指向的那个账号，继续用旧的会导致后续请求全部 401。
+    """
+    by_openid = Parent.objects.filter(openid=openid).first() if openid else None
+    by_mobile = (
+        Parent.objects.filter(mobile=mobile).order_by('id').first()
+        if mobile else None
+    )
+
+    # ---- 情况 1：两个入口都命中，且不是同一条 → 合并 ----
+    if by_openid and by_mobile and by_openid.pk != by_mobile.pk:
+        logger.info(
+            '同一人两条账号：openid 侧 id=%s / mobile 侧 id=%s，合并保留后者',
+            by_openid.id, by_mobile.id,
+        )
+        survivor = by_mobile
+        _merge_into(survivor, by_openid)
+        return survivor
+
+    # ---- 情况 2：只命中一条 ----
+    if by_openid:
+        if mobile and not by_openid.mobile:
+            by_openid.mobile = mobile
+            by_openid.save(update_fields=['mobile'])
+        return by_openid
+
+    if by_mobile:
+        if openid and not by_mobile.openid:
+            by_mobile.openid = openid
+            by_mobile.save(update_fields=['openid'])
+            logger.info('为既有家长补 openid：parent_id=%s', by_mobile.id)
+        return by_mobile
+
+    # ---- 情况 3：都没命中，新建 ----
+    parent = Parent.objects.create(
+        openid=openid or None,
+        mobile=mobile or None,
+    )
+    logger.info('新建家长：parent_id=%s openid=%s mobile=%s',
+                parent.id, openid[:8] if openid else '-', mobile or '-')
+    return parent
+
+
 @transaction.atomic
-def bind_mobile(parent: Parent, mobile: str) -> list[Student]:
-    """为已登录的家长补手机号，并立即跑一次匹配。
+def bind_mobile(parent: Parent, mobile: str) -> Parent:
+    """为已登录的家长补手机号，并立即跑一次匹配。返回**存活的账号**。
 
     典型场景：用户走微信静默登录（只有 openid，没有手机号），
     前端提示「补手机号以查看孩子的课表」，补完就能看到孩子。
 
-    为什么**不检查手机号是否已被其他 Parent 占用**
-    -------------------------------------------------
-    ``Parent.mobile`` 的字段定义就是「非唯一（二孩家庭同号）」，因为：
-    - 手机号在本项目里是「绑定孩子的凭据」，不是唯一身份标识
-    - 爸爸、妈妈各自微信登录后填同一个手机号，都应该看到同一批孩子
-    - 同一个人先用验证码登录、后改用微信登录，产生两条记录也无害
+    **补号可能触发账号合并**：这个手机号若已属于另一个 Parent
+    （用户以前用验证码登录过），那就是同一个人的两半，应合并成一条。
+    合并后 ``parent`` 对象可能已被删除，所以必须用返回值重签 JWT。
 
-    早先的实现会做「把 openid 合并到老账号」的处理，但那样会让 JWT 里的
-    user_id 指向一个已被弃用的账号，补号后立刻拿不到数据，是自找麻烦。
+    Returns:
+        存活的 :class:`Parent`（可能就是 ``parent`` 本身）
     """
-    parent.mobile = mobile
-    parent.save(update_fields=['mobile'])
-    return match_children(parent)
+    if not parent.openid:
+        # 纯手机号账号来补号，理论上不该发生（它本来就有手机号），
+        # 直接写上去即可，避免 resolve_identity 按空 openid 误判
+        parent.mobile = mobile
+        parent.save(update_fields=['mobile'])
+        match_children(parent)
+        return parent
+
+    survivor = resolve_identity(openid=parent.openid, mobile=mobile)
+    match_children(survivor)
+    return survivor
 
 
 def build_login_payload(parent: Parent) -> dict:

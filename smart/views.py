@@ -112,7 +112,9 @@ def login(request):
         if not passed:
             return fail(reason)
 
-        parent, _ = login_service.get_or_create_parent(mobile=mobile)
+        # resolve_identity 会在「该手机号已有另一条微信账号」时自动合并，
+        # 返回的才是存活账号，必须用它签 JWT
+        parent = login_service.resolve_identity(mobile=mobile)
         login_service.match_children(parent)
 
     else:
@@ -129,7 +131,7 @@ def login(request):
             # 网络超时等，可重试
             return fail('网络不太稳定，请重试')
 
-        parent, _ = login_service.get_or_create_parent(openid=session['openid'])
+        parent = login_service.resolve_identity(openid=session['openid'])
         login_service.match_children(parent)
 
     refresh = RefreshToken.for_user(parent)
@@ -154,19 +156,23 @@ def bind_mobile(request):
 
     补号后孩子列表可能从空变成非空，所以直接把新的 payload 返回，
     前端不用再发一次 profile 请求。
+
+    **补号可能触发账号合并**：如果该手机号已属于另一条账号（用户以前用
+    验证码登录过），两条会合并成一条，当前 JWT 里的 user_id 就失效了。
+    因此这里必须**重新签发 token** 一并返回，前端要更新本地 token，
+    否则下一次请求就会 401。
     """
     serializer = BindMobileSerializer(data=request.data)
     if not serializer.is_valid():
         return fail(_first_error(serializer.errors))
 
-    parent = request.user
-    login_service.bind_mobile(parent, serializer.validated_data['mobile'])
+    survivor = login_service.bind_mobile(request.user, serializer.validated_data['mobile'])
 
-    # 补号后孩子列表可能从空变成非空，直接把新的 payload 返回，
-    # 前端不用再发一次 profile 请求
-    payload = login_service.build_login_payload(parent)
+    # 用存活账号重签 token（可能与原 token 指向同一个 id，也可能换了）
+    refresh = RefreshToken.for_user(survivor)
+    payload = login_service.build_login_payload(survivor)
 
-    return ok(**payload)
+    return ok(token=str(refresh.access_token), **payload)
 
 
 @api_view(['POST'])
