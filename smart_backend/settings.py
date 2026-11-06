@@ -157,3 +157,40 @@ WECHAT_APPSECRET = os.getenv('WECHAT_APPSECRET', '')
 
 # 用于拼接图片等资源的完整 URL（小程序端无法使用相对路径）
 PUBLIC_BASE_URL = os.getenv('PUBLIC_BASE_URL', 'http://127.0.0.1:8000').rstrip('/')
+
+# ============================================================
+# 日志
+# ============================================================
+
+# 只在 DEBUG 时把业务日志打到控制台。
+# 生产环境应改为写文件或接入日志采集，避免 stdout 丢失。
+if DEBUG:
+    LOGGING = {
+        'version': 1,
+        'disable_existing_loggers': False,
+        'formatters': {
+            'simple': {
+                'format': '[{levelname}] {asctime} {name}: {message}',
+                'style': '{',
+                'datefmt': '%H:%M:%S',
+            },
+        },
+        'handlers': {
+            'console': {
+                'class': 'logging.StreamHandler',
+                'formatter': 'simple',
+            },
+        },
+        'root': {
+            'handlers': ['console'],
+            'level': 'INFO',
+        },
+        # 微信接口封装的日志单独给 INFO，方便排查登录问题
+        'loggers': {
+            'libs.wechat': {
+                'handlers': ['console'],
+                'level': 'INFO',
+                'propagate': False,
+            },
+        },
+    }
