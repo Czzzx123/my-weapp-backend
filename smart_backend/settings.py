@@ -214,6 +214,12 @@ USE_I18N = True
 # 新建项目如果不是从 naive 迁移过来的，不需要那个迁移。
 USE_TZ = True
 
+# 后台登录跳转
+# Django 默认 LOGIN_REDIRECT_URL = '/accounts/profile/'，本项目没有这个路径。
+# 不配置的话，从登录页直接登录（URL 里没带 next 参数）会跳到 404。
+LOGIN_REDIRECT_URL = '/wl-manage/'
+LOGIN_URL = '/wl-manage/login/'
+
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
