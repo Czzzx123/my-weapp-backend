@@ -1,8 +1,15 @@
+from django.core.validators import RegexValidator
 from django.db import models
 
 # ============================================================
 # 未蓝科技 · 智慧教育 —— 数据模型
 # ============================================================
+
+# 中国大陆手机号：1 开头，第二位 3-9，共 11 位
+MOBILE_VALIDATOR = RegexValidator(
+    regex=r'^1[3-9]\d{9}$',
+    message='手机号格式不正确，应为 11 位数字且以 1 开头',
+)
 
 
 # ============================================================
@@ -149,6 +156,7 @@ class Student(models.Model):
     mobile = models.CharField(
         verbose_name='家长手机号', max_length=11,
         null=True, blank=True, db_index=True,
+        validators=[MOBILE_VALIDATOR],
         help_text='家长报名时提供，登录时按此匹配。不唯一（二孩同号）')
     grade = models.CharField(
         verbose_name='年级', max_length=16, blank=True, default='')

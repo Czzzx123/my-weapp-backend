@@ -1,5 +1,6 @@
 from django.contrib import admin
 from django.db.models import Count, Sum
+from django.forms.models import BaseInlineFormSet
 
 from .models import (
     Banner, Notice,
@@ -177,17 +178,35 @@ class ClassSessionAdmin(admin.ModelAdmin):
     ordering = ('weekday', 'start_time')
 
 
+class HourLogFormSet(BaseInlineFormSet):
+    """课时流水的账本保护
+
+    规则：**旧账只能看，不能改；新账只能追加。**
+
+    为什么不用 `readonly_fields`：内联的 `get_readonly_fields(request, obj)` 里
+    `obj` 是**父对象**（报名记录），它在编辑页永远不为 None，
+    于是连新增的空行也会被一起锁死 —— 结果是全系统没有任何入口能写流水。
+    正确做法是按**每条已存在的记录**（`form.instance.pk`）逐条禁用字段：
+    已保存的流水字段 disabled（浏览器不提交 + 服务端忽略，保留原值），
+    新增空行仍可编辑。
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for form in self.forms:
+            if form.instance.pk:
+                for name in ('delta', 'reason', 'session', 'operator', 'remark'):
+                    if name in form.fields:
+                        form.fields[name].disabled = True
+
+
 class HourLogInline(admin.TabularInline):
     model = HourLog
+    formset = HourLogFormSet
     extra = 1
+    can_delete = False          # 账本不允许删行，冲正请追加一条
     fields = ('delta', 'reason', 'session', 'operator', 'remark')
-    verbose_name_plural = '课时流水（只能新增，不能改旧账）'
-
-    def get_readonly_fields(self, request, obj=None):
-        # 已有流水不可改，只能新增一条来冲正
-        if obj is not None:
-            return ('delta', 'reason', 'session', 'operator')
-        return ()
+    verbose_name_plural = '课时流水（旧账只读，只能追加新记录）'
 
 
 @admin.register(Enrollment)

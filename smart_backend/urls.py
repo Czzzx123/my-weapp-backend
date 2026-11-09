@@ -20,7 +20,8 @@ from django.conf import settings
 from django.urls import path, include
 
 urlpatterns = [
-    path('admin/', admin.site.urls),
+    # 后台路径不用默认的 /admin/，避免被公开扫描器扫到
+    path('wl-manage/', admin.site.urls),
     path('smart/', include('smart.urls')),
 
     path('media/<path:path>', serve, {'document_root': settings.MEDIA_ROOT}),
