@@ -12,10 +12,11 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from libs.wechat import WeChatConfigError, WeChatError, code2session
 
 from . import avatar_service, login_service, sms
-from .models import Banner, Notice
+from .models import Banner, LearningPost, Notice
 from .serializer import (
     BannerSerializer,
     BindMobileSerializer,
+    LearningPostSerializer,
     LoginSerializer,
     NoticeSerializer,
     SendSmsSerializer,
@@ -70,6 +71,32 @@ class NoticeView(GenericViewSet, ListModelMixin):
     # 公告列表倒序：最新在前（原为升序，家长看到的是最旧的通知）
     queryset = Notice.objects.all().order_by('-create_time')
     serializer_class = NoticeSerializer
+
+
+class LearningPostView(GenericViewSet, ListModelMixin):
+    """首页「上课日常」列表 —— 课程 / 活动的展示。
+
+    **匿名可访问，这是刻意的。**
+    这里的图片是课程活动的公开宣传照（家长、来访咨询的人都能看），
+    不是孩子的隐私照片。真正需要按班级 / 学生隔离的是「电子相册」，
+    那是另一个未开发的功能，届时才需要做媒体鉴权。
+
+    ``is_delete=False`` 在这里过滤，而不是靠 queryset 的默认 manager：
+    后台是软删除（``is_delete`` 打勾），硬删会让已发出的分享链接 404。
+    """
+
+    queryset = LearningPost.objects.filter(is_delete=False)
+    serializer_class = LearningPostSerializer
+    # 首页只展示近期几条，不分页。前端 WXML 也没有上拉加载，
+    # 突然返回 20 条会让首页拉得很长，反而难扫读。
+    pagination_class = None
+
+    def list(self, request, *args, **kwargs):
+        # 首页版面固定 3 张卡（与既有 mock 数据一致），
+        # 多的留给「查看全部」页（未做），这里直接切掉，避免前端再截一次。
+        queryset = self.filter_queryset(self.get_queryset())[:3]
+        serializer = self.get_serializer(queryset, many=True)
+        return ok(daily=serializer.data)
 
 
 # ============================================================

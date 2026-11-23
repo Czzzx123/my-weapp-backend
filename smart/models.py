@@ -54,6 +54,63 @@ class Notice(models.Model):
         return self.title
 
 
+class LearningPost(models.Model):
+    """首页学习动态 —— 课程 / 活动的展示
+
+    **这是公开内容，不是孩子的隐私照片。**
+
+    用途是让家长和潜在咨询者直观看到「这儿上课是什么样的」，
+    所以不需要登录、不需要按班级隔离，``media/`` 维持公开直出即可。
+
+    与「电子相册」的区别（重要，别混）：
+    - 本模型：课程活动宣传照，所有人可见
+    - 电子相册（未开发）：学生 / 班级的照片，仅本人或本班可见，
+      届时才需要做媒体鉴权和 ``Student ↔ CourseClass`` 的关联
+
+    字段是照着前端 ``pages/index/index.js`` 里 ``daily_list`` 假数据的
+    结构设计的，接口接上后页面版式不用改：
+
+        { id, date, course, theme, title, content }
+    """
+
+    THEME_CHOICES = (
+        ('blue', '蓝色'),
+        ('mint', '薄荷绿'),
+        ('purple', '紫色'),
+    )
+
+    title = models.CharField(
+        max_length=64, verbose_name='标题',
+        help_text='如「猜数字小游戏完成」')
+    course_name = models.CharField(
+        max_length=32, verbose_name='课程名',
+        help_text='前端卡片上的课程标签，如「Python课堂」')
+    content = models.TextField(
+        verbose_name='正文', blank=True, default='')
+    img = models.ImageField(
+        upload_to='learning', verbose_name='配图',
+        help_text='建议 750x420 以上；公开可访问')
+    theme = models.CharField(
+        max_length=16, verbose_name='卡片配色',
+        choices=THEME_CHOICES, default='blue',
+        help_text='对应前端 course-tag 的配色类名')
+    is_delete = models.BooleanField(
+        default=False, verbose_name='是否删除')
+    create_time = models.DateTimeField(
+        auto_now_add=True, verbose_name='发布时间')
+
+    class Meta:
+        verbose_name_plural = '学习动态'
+        ordering = ['-create_time']
+        indexes = [
+            # 列表按时间倒序，且过滤 is_delete
+            models.Index(fields=['is_delete', '-create_time']),
+        ]
+
+    def __str__(self):
+        return f'{self.course_name} - {self.title}'
+
+
 # ============================================================
 # A 组 · 家长体系（登录 / 绑定用）
 # ============================================================

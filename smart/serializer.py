@@ -2,7 +2,7 @@ import re
 
 from rest_framework import serializers
 
-from .models import Banner, Notice
+from .models import Banner, LearningPost, Notice
 
 # 中国大陆手机号：1 开头，第二位 3-9，共 11 位
 MOBILE_REGEX = r'^1[3-9]\d{9}$'
@@ -39,6 +39,35 @@ class NoticeSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             'create_time': {'format': '%Y-%m-%d'}
         }
+
+
+class LearningPostSerializer(serializers.ModelSerializer):
+    """首页学习动态序列化类
+
+    **字段名故意和模型不一样，不要"修正"成 course_name / create_time。**
+
+    前端 ``pages/index/index.js`` 里 ``daily_list`` 的假数据结构是：
+
+        { id, date, course, theme, title, content }
+
+    直接沿用这套键名，前端接接口时只改「数据从哪来」，卡片版式一行都不用动。
+    如果这里输出 ``course_name``，前端每张卡片都要写 ``item.course_name``，
+    而收藏/分享/埋点那几处又用的是 ``item.course``，改漏一处就是空白。
+
+    ``date`` 输出 ``10月18日`` 这种中文短格式，而不是 ``2026-10-18``。
+    理由同上：这是首页卡片上直接显示给人看的文案，格式对齐就不必在前端
+    再写一层 formatDate。跨年场景下会丢掉年份，但「上课日常」只看近期内容，
+    且后端按 ``-create_time`` 排序，不存在排序歧义。
+    """
+
+    course = serializers.CharField(source='course_name', read_only=True)
+    date = serializers.DateTimeField(
+        source='create_time', format='%m月%d日', read_only=True)
+
+    class Meta:
+        model = LearningPost
+        fields = ['id', 'title', 'course', 'content', 'img', 'theme', 'date']
+        read_only_fields = fields
 
 
 class SendSmsSerializer(serializers.Serializer):

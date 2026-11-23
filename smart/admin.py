@@ -1,9 +1,10 @@
 from django.contrib import admin
 from django.db.models import Count, Sum
 from django.forms.models import BaseInlineFormSet
+from django.utils.html import format_html
 
 from .models import (
-    Banner, Notice,
+    Banner, LearningPost, Notice,
     Parent, Student, ParentStudent,
     Course, CourseClass, ClassSession,
     Enrollment, HourLog,
@@ -25,6 +26,60 @@ class BannerAdmin(admin.ModelAdmin):
 class NoticeAdmin(admin.ModelAdmin):
     list_display = ('id', 'title', 'create_time')
     search_fields = ('title', 'content')
+
+
+@admin.register(LearningPost)
+class LearningPostAdmin(admin.ModelAdmin):
+    list_display = ('id', 'thumb', 'title', 'course_name', 'theme',
+                    'create_time', 'is_delete')
+    list_filter = ('is_delete', 'theme', 'course_name')
+    search_fields = ('title', 'course_name', 'content')
+    list_editable = ('theme', 'is_delete')
+    readonly_fields = ('create_time', 'preview')
+    date_hierarchy = 'create_time'
+    fieldsets = (
+        ('卡片内容', {
+            'fields': ('title', 'course_name', 'content'),
+            'description': '标题显示在卡片顶部，课程名是卡片上的彩色标签，'
+                           '正文在首页截断为 2 行，写长一点没关系。'
+        }),
+        ('图片', {
+            'fields': ('img', 'preview'),
+            'description': '这是课程 / 活动的展示照，所有访客都能看到，'
+                           '不要放孩子的单人照片或含姓名、联系方式的内容。'
+                           '建议 16:9（如 750x420），卡片上会裁成通栏。'
+        }),
+        ('展示', {
+            'fields': ('theme', 'is_delete', 'create_time'),
+            'description': '配色对应前端标签颜色：蓝色=编程类，薄荷绿=创意类，紫色=硬件类。'
+        }),
+    )
+
+    def get_queryset(self, request):
+        # 默认隐藏软删除的记录：后台列表不该被历史数据淹没。
+        # 需要找回时用列表页右侧的筛选器切到「全部」。
+        qs = super().get_queryset(request)
+        if request.GET.get('is_delete__exact') in ('0', '1'):
+            return qs
+        return qs.filter(is_delete=False)
+
+    @admin.display(description='配图')
+    def thumb(self, obj):
+        if not obj.img:
+            return '（无图）'
+        # mark_safe 是必要的：format_html 不能用在 list_display 的返回里拼多段，
+        # 这里只是一段固定结构的 img 标签，src 已由 Django 做了转义。
+        return format_html(
+            '<img src="{}" style="height:44px;width:78px;object-fit:cover;'
+            'border-radius:4px;" />', obj.img.url)
+
+    @admin.display(description='效果预览')
+    def preview(self, obj):
+        if not obj or not obj.img:
+            return '保存后这里会显示图片预览'
+        return format_html(
+            '<img src="{}" style="max-width:420px;width:100%;border-radius:8px;" />',
+            obj.img.url)
 
 
 # ============================================================

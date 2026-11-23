@@ -2,7 +2,7 @@ from django.urls import path
 from rest_framework.routers import SimpleRouter
 
 from . import views
-from .views import BannerView, NoticeView
+from .views import BannerView, LearningPostView, NoticeView
 
 urlpatterns = [
     # 登录（双入口）
@@ -17,5 +17,6 @@ urlpatterns = [
 router = SimpleRouter()
 router.register('banner', BannerView, 'banner')
 router.register('notice', NoticeView, 'notice')
+router.register('learning', LearningPostView, 'learning')
 
 urlpatterns += router.urls
