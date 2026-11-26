@@ -504,3 +504,93 @@ class HourLog(models.Model):
         when = f' {self.lesson_date}' if self.lesson_date else ''
         revoked = ' [已撤销]' if self.is_revoked else ''
         return f'{self.enrollment} {sign}{self.delta}{when} ({self.get_reason_display()}){revoked}'
+
+
+class NotifyLog(models.Model):
+    """通知发送记录：防重复 + 留痕
+
+    为什么必须有这张表
+    ------------------
+    开课前提醒是**定时任务**发的，每 5 分钟跑一次。同一个班有 20 个孩子，
+    如果不记「这节课的这个孩子已经提醒过了」，一早上家长会收到几十条
+    一样的短信/通知 —— 会被当成骚扰直接屏蔽，比不发还糟。
+
+    唯一约束 ``parent + session + lesson_date + notify_type`` 就是这道闸门。
+    任务每轮都插一条，插得进去才发；插不进去说明发过了，跳过。
+    这比「查一下有没有发过再发」可靠：并发跑两个任务实例时，
+    check-then-act 会漏，唯一约束不会。
+
+    发送失败也要留记录吗
+    --------------------
+    要，但要能在后台重发。``status`` 区分三种：
+      sent   已发出
+      failed 发了但微信/短信服务商报错 —— 可能是临时故障，值得重试
+      skipped 根本不该发（没 openid、没授权、已签到、课时不足…）
+
+    ``skipped`` 与 ``failed`` 必须分开：压在一起的话，
+    「家长没授权」这种正常状态会混进错误日志里，把真正的故障淹掉。
+    """
+
+    TYPE_CHOICES = (
+        ('before_class', '上课前提醒'),
+        ('checkin', '签到成功通知'),
+    )
+
+    STATUS_CHOICES = (
+        ('sent', '已发送'),
+        ('failed', '发送失败'),
+        ('skipped', '未发送'),
+    )
+
+    parent = models.ForeignKey(
+        Parent, verbose_name='家长', on_delete=models.CASCADE,
+        related_name='notify_logs')
+    student = models.ForeignKey(
+        Student, verbose_name='学生', on_delete=models.CASCADE,
+        related_name='notify_logs',
+        help_text='一个家长两个孩子时，要能分清是哪個孩子的课')
+    session = models.ForeignKey(
+        ClassSession, verbose_name='上课时段', on_delete=models.CASCADE,
+        related_name='notify_logs')
+    lesson_date = models.DateField(verbose_name='上课日期')
+    notify_type = models.CharField(
+        verbose_name='通知类型', max_length=16, choices=TYPE_CHOICES)
+    status = models.CharField(
+        verbose_name='结果', max_length=16, choices=STATUS_CHOICES,
+        default='skipped')
+    channel = models.CharField(
+        verbose_name='渠道', max_length=16, blank=True, default='',
+        help_text='subscribe / sms；留空表示没走到发送这一步')
+    errcode = models.IntegerField(
+        verbose_name='错误码', null=True, blank=True,
+        help_text='43101 = 家长未订阅或额度用完，属正常状态')
+    remark = models.CharField(
+        verbose_name='备注', max_length=128, blank=True, default='')
+    create_time = models.DateTimeField(verbose_name='记录时间', auto_now_add=True)
+
+    class Meta:
+        verbose_name_plural = '通知记录'
+        ordering = ['-create_time']
+        indexes = [
+            models.Index(fields=['lesson_date', 'notify_type']),
+            models.Index(fields=['parent', 'create_time']),
+        ]
+        constraints = [
+            # 同一个家长、同一节课、同一种通知，只发一次。
+            #
+            # 定时任务每 5 分钟扫一次，同一个时段的课会被扫到几十遍；
+            # 去掉这条约束，家长一早上会收到几十条重复提醒。
+            #
+            # 为什么把 student 放进约束里：
+            # 一个家长有两个孩子上不同的班，同一时段巧合撞课时，
+            # 两条提醒都该发（「小明和小红的课都在 16:00」和
+            # 只提小明，信息量完全不同）。
+            models.UniqueConstraint(
+                fields=['parent', 'student', 'session', 'lesson_date', 'notify_type'],
+                name='uniq_notify_per_lesson',
+            ),
+        ]
+
+    def __str__(self):
+        return (f'{self.parent} {self.lesson_date} '
+                f'{self.get_notify_type_display()}({self.get_status_display()})')

@@ -9,20 +9,23 @@ access_token 是全局限流资源（每天 2000 次获取、有效期 7200 秒�
 **不要被「长期订阅」误导**
 --------------------------
 长期订阅（一次授权、永久推送）只向政务民生、医疗、交通、金融、教育等
-**线下公共服务**的少数二级类目开放，个人主体基本申请不到。
-本项目当前是个人主体，但按「未来移植到公司主体、以教育类目申请」来设计，
-所以接口按标准订阅消息写，不降级、不做站内兜底。
+**线下公共服务**的少数二级类目开放，且模板库里未必有对应场景的模板。
+本项目当前是个人主体，按「未来整体迁移到公司主体」来开发 ——
+所有微信配置都从 settings / 环境变量读，主体换了只改配置不改代码。
 
 一次性订阅的语义必须记清：**家长点一次「允许」，你只能给他发一条。**
-发完额度就归零，下次要再推得让家长重新点。因此前端要在
-「查看课表 / 查看课时」这类高意愿时刻去要授权，而不是一进小程序就弹
-（微信明令禁止，会封消息能力）。
+发完额度就归零，下次要再推得让家长重新点。所以：
+  · 「开课前提醒」这种**有时效**的通知，靠家长反复点授权不可靠，
+    要靠短信等确定渠道兜底（见 settings.SMS_ENABLED）；
+  · 「签到成功通知」没有时效（晚上看到孩子下午已签到也够用），
+    适合走订阅消息，发得出去就发，发不出去家长打开页面也能看到。
 
 发送失败不能影响签到
 --------------------
 签到是**账务操作**，通知是**附加动作**。家长没订阅、token 过期、
 模板被删，都不该让老师看到「签到失败」。
-所以 ``notify_checkin`` 永不抛异常，只记日志。
+所以 ``notify_checkin`` 永不抛异常，只记日志；
+``notify_before_class`` 把结果返回给调用方记账，但也不抛。
 """
 
 from __future__ import annotations
@@ -138,8 +141,7 @@ def send_subscribe_message(
     if not openid or not template_id:
         # 没 openid（纯手机号登录过但没走过微信授权）或没配模板，
         # 都属于「这条通知发不出去」，不是错误，直接跳过。
-        logger.info('跳过订阅消息：openid 或 template_id 为空')
-        return
+        raise WeChatNotifyError(-1, 'openid 或 template_id 为空')
 
     token = get_access_token()
 
@@ -181,13 +183,19 @@ def send_subscribe_message(
 
     if errcode:
         # 43101：用户未订阅或已用完额度 —— 这是最常见的「失败」，
-        # 属于正常业务状态，用 info 记一笔便于统计授权率即可。
-        if errcode == 43101:
-            logger.info('用户未订阅/额度已用完，跳过通知 openid=%s...', openid[:8])
-            return
+        # 属于正常业务状态。抛出去让调用方决定怎么记（不记成故障）。
         raise WeChatNotifyError(errcode, result.get('errmsg', ''))
 
     logger.info('订阅消息已发送 openid=%s... template=%s', openid[:8], template_id)
+
+
+def _parents_of(student) -> list:
+    """这个孩子所有绑定了 openid 的家长。"""
+    return [
+        ps.parent for ps in
+        student.parent_students.select_related('parent')
+        if ps.parent.openid
+    ]
 
 
 def notify_checkin(enrollment, lesson_date, session, remain: int) -> bool:
@@ -200,7 +208,7 @@ def notify_checkin(enrollment, lesson_date, session, remain: int) -> bool:
         remain: 签到后剩余课时。
 
     Returns:
-        True 表示确实发出去了；False 表示跳过或失败（均只记日志）。
+        True 表示至少发出了一条；False 表示跳过或全部失败（均只记日志）。
     """
     template_id = getattr(settings, 'WECHAT_TEMPLATE_CHECKIN', '')
     if not template_id:
@@ -209,11 +217,7 @@ def notify_checkin(enrollment, lesson_date, session, remain: int) -> bool:
 
     # 找这个孩子的家长。一个孩子可能绑多个家长，逐个发 ——
     # 爸妈都该知道孩子到了。
-    parents = [
-        ps.parent for ps in
-        enrollment.student.parent_students.select_related('parent')
-        if ps.parent.openid
-    ]
+    parents = _parents_of(enrollment.student)
     if not parents:
         logger.info('学生 %s 没有绑定带 openid 的家长，跳过通知', enrollment.student.name)
         return False
@@ -243,6 +247,53 @@ def notify_checkin(enrollment, lesson_date, session, remain: int) -> bool:
             logger.warning('签到通知发送失败 parent=%s：%s', parent.id, exc)
 
     return ok
+
+
+def notify_before_class(parent, student, session,
+                        lesson_date, remain: int) -> tuple[bool, int, str]:
+    """上课前提醒。**不吞异常，把结果交给调用方记账。**
+
+    与 ``notify_checkin`` 的区别
+    ----------------------------
+    签到通知是签完顺手发的，失败只记日志就够了（老师不该因为通知失败
+    看到签到报错）。上课前提醒是定时任务发的，**必须知道每条的死活** ——
+    家长没收到要能在后台查出来、必要时补发。所以这里把
+    ``(成功?, 错误码, 说明)`` 原样返回，由调用方写 ``NotifyLog``。
+
+    参数取 parent / student 而不是 enrollment
+    ------------------------------------------
+    因为「课时不足」这件事不该阻止提醒本身的一部分场景（比如只是提醒
+    别忘了来），但余额要展示给家长看，所以单独传 remain。
+
+    Returns:
+        ``(True, 0, '')`` 发送成功；
+        ``(False, errcode, 说明)`` 失败，43101 表示未订阅。
+    """
+    template_id = getattr(settings, 'WECHAT_TEMPLATE_BEFORE_CLASS', '')
+    if not template_id:
+        return False, -1, '未配置 WECHAT_TEMPLATE_BEFORE_CLASS'
+
+    data = {
+        'thing1': {'value': _clip(student.name, 20)},
+        'thing2': {'value': _clip(session.course_class.name, 20)},
+        'time3': {'value': _fmt_time(lesson_date, session)},
+        'thing4': {'value': _clip(
+            f'还有{remain}课时，请准时到校' if remain > 0 else '课时不足，请先充值',
+            20)},
+    }
+
+    try:
+        send_subscribe_message(
+            openid=parent.openid,
+            template_id=template_id,
+            page='pages/schedule/schedule',
+            data=data,
+        )
+        return True, 0, ''
+    except WeChatNotifyError as exc:
+        return False, exc.errcode, exc.errmsg
+    except Exception as exc:  # noqa: BLE001 —— 网络等异常也要变成可记账的结果
+        return False, -1, str(exc)[:120]
 
 
 def _clip(text: str, limit: int) -> str:

@@ -427,15 +427,34 @@ def notify_config(request):
 
     返回 ``template_id`` 为空字符串表示「后台还没配模板」，
     前端据此隐藏授权按钮，而不是点了才发现失败。
+
+    为什么要一次下发两个模板
+    ------------------------
+    微信的 ``requestSubscribeMessage`` 一次可以传多个 tmplIds，
+    家长在一个弹窗里勾选，**每个模板各自获得一条额度**。
+    分成两次弹窗会让家长连点两遍，第二遍的拒绝率明显更高。
+    所以这里把「签到通知」和「上课前提醒」一起给前端，
+    让它们合并成一次授权。
     """
     from django.conf import settings
 
-    template_id = (getattr(settings, 'WECHAT_TEMPLATE_CHECKIN', '') or '').strip()
+    checkin = (getattr(settings, 'WECHAT_TEMPLATE_CHECKIN', '') or '').strip()
+    before_class = (getattr(settings, 'WECHAT_TEMPLATE_BEFORE_CLASS', '') or '').strip()
+
+    # 只把配好的塞进去：没配的模板 id 传给微信会报 20001（模板不存在），
+    # 整个授权弹窗都会失败 —— 连带把另一个本来能用的模板也搞挂。
+    tmpl_ids = [t for t in (checkin, before_class) if t]
+
     return ok(
-        # 上课签到提醒（签到成功后发给家长）
-        template_id=template_id,
-        # 是否可用。模板没配时前端不显示「开启提醒」按钮
-        enabled=bool(template_id),
+        # 上课签到提醒（签到成功后发给家长）。保留这个字段是为了兼容
+        # 已经发出去的旧版小程序 —— 它只认 template_id。
+        template_id=checkin,
+        # 上课前提醒（开课前 N 小时发给家长）
+        template_id_before_class=before_class,
+        # 一次性授权用的完整列表，前端直接传给 tmplIds
+        tmpl_ids=tmpl_ids,
+        # 是否可用。一个模板都没配时前端不显示「开启提醒」按钮
+        enabled=bool(tmpl_ids),
     )
 
 

@@ -243,6 +243,20 @@ WECHAT_APPSECRET = os.getenv('WECHAT_APPSECRET', '')
 # 留空则跳过通知，签到照常进行 —— 通知是附加动作，不能影响账务。
 WECHAT_TEMPLATE_CHECKIN = os.getenv('WECHAT_TEMPLATE_CHECKIN', '')
 
+# 上课前提醒的订阅消息模板 id。与签到模板是两个不同的模板，
+# 字段结构也不同（见 libs/wechat_notify.py 的 notify_before_class）。
+WECHAT_TEMPLATE_BEFORE_CLASS = os.getenv('WECHAT_TEMPLATE_BEFORE_CLASS', '')
+
+# 上课前提前多少分钟提醒。默认 120（两小时）：
+# 足够家长调整安排，又不至于早到被忘掉。
+WECHAT_REMIND_LEAD_MINUTES = int(os.getenv('WECHAT_REMIND_LEAD_MINUTES', '120'))
+
+# 短信通道开关。订阅消息的额度掌握在家长手里（不打开小程序就收不到），
+# 「开课前提醒」有时效性，必须有确定渠道兜底。
+# 留空/False 时定时任务只发订阅消息，不发短信。
+# 接入后填 True，并把 SMS_* 配齐。
+SMS_ENABLED = os.getenv('SMS_ENABLED', '').lower() in ('1', 'true', 'yes')
+
 # 订阅消息点开后跳转的小程序版本：developer / trial / formal。
 # 开发期填 developer，否则手机上点通知会打开一个不存在的正式版页面。
 WECHAT_MINIPROGRAM_STATE = os.getenv('WECHAT_MINIPROGRAM_STATE', '')

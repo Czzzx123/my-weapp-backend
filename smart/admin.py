@@ -11,7 +11,7 @@ from .models import (
     Banner, LearningPost, Notice,
     Parent, Student, ParentStudent,
     Course, CourseClass, ClassSession,
-    Enrollment, HourLog,
+    Enrollment, HourLog, NotifyLog,
 )
 
 
@@ -509,3 +509,45 @@ admin.site.get_urls = _get_urls_with_checkin
 admin.site.site_header = '未蓝科技 · 智慧教育'
 admin.site.site_title = '未蓝科技后台'
 admin.site.index_title = '教务管理'
+
+@admin.register(NotifyLog)
+class NotifyLogAdmin(admin.ModelAdmin):
+    """通知记录：只读，用来回答「这个家长到底收到没有」。
+
+    为什么全只读
+    ------------
+    这张表是判断「要不要发」的依据（唯一约束）。允许手工改状态，
+    就等于允许把「没发出去」改成「已发送」—— 那之后所有的排查
+    都建立在假数据上。要重发就删记录（见 allow_delete），
+    而不是改状态。
+
+    为什么允许删除
+    --------------
+    这是唯一的补发手段：删掉某条 ``failed`` 记录，下一次定时任务
+    就会重新尝试。比做一个「重发」按钮简单，也更符合这张表的语义
+    （记录 = 发过没）。
+    """
+
+    list_display = (
+        'id', 'lesson_date', 'notify_type', 'status',
+        'student', 'parent', 'errcode', 'create_time',
+    )
+    list_filter = ('notify_type', 'status', 'lesson_date')
+    search_fields = ('student__name', 'parent__nickname', 'parent__mobile')
+    date_hierarchy = 'lesson_date'
+    ordering = ('-create_time',)
+
+    # 全字段只读：见类注释
+    readonly_fields = [f.name for f in NotifyLog._meta.fields]
+
+    def has_add_permission(self, request):
+        # 手建记录没有意义 —— 记录是「发送动作的副产品」，
+        # 手建的记录会让定时任务误以为「已经发过了」而跳过真实发送。
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        # 删记录 = 允许重发一次。这是有意的补发入口，见类注释
+        return True
