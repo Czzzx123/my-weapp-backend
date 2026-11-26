@@ -35,6 +35,7 @@
   table.ck-table td { padding: 10px 12px; border-bottom: 1px solid #f0f1f4; }
   table.ck-table tr.ck-checked td { background: #f0fdf4; }
   table.ck-table tr.ck-short td { background: #fef2f2; }
+  table.ck-table tr.ck-leave td { background: #fffbeb; }
 
   .ck-tag {
     display: inline-block; padding: 2px 8px; border-radius: 4px;
@@ -44,6 +45,7 @@
   .ck-tag-wait { background: #f3f4f6; color: #6b7280; }
   .ck-tag-short { background: #fee2e2; color: #b91c1c; }
   .ck-tag-revoked { background: #f3f4f6; color: #9ca3af; text-decoration: line-through; }
+  .ck-tag-leave { background: #fef3c7; color: #b45309; }
 
   .ck-msg { padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 14px; }
   .ck-msg-error { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
@@ -151,13 +153,19 @@
             </thead>
             <tbody>
               {% for row in roster %}
-                <tr class="{% if row.checked %}ck-checked{% elif row.remain <= 0 %}ck-short{% endif %}">
+                <tr class="{% if row.checked %}ck-checked{% elif row.remain <= 0 %}ck-short{% elif row.on_leave %}ck-leave{% endif %}">
                   <td>
                     {% if row.checked %}
                       {# 已签到的不给勾选框，避免误解成「还能再签一次」 #}
                       <span style="color:#15803d;">&#10003;</span>
                     {% elif row.remain <= 0 %}
                       <input type="checkbox" class="ck-item" disabled>
+                    {% elif row.on_leave %}
+                      {# 请假的孩子**默认不勾**，但允许老师手动勾上 ——
+                         家长请了假、孩子最后又来了，是常见情况，
+                         这里锁死就没法签到，只能让老师去后台改请假状态。 #}
+                      <input type="checkbox" name="enrollment_ids" value="{{ row.enrollment.id }}"
+                             class="ck-item">
                     {% else %}
                       <input type="checkbox" name="enrollment_ids" value="{{ row.enrollment.id }}"
                              class="ck-item" checked>
@@ -174,6 +182,8 @@
                   <td>
                     {% if row.checked %}
                       <span class="ck-tag ck-tag-ok">已签到</span>
+                    {% elif row.on_leave %}
+                      <span class="ck-tag ck-tag-leave">已请假</span>
                     {% elif row.remain <= 0 %}
                       <span class="ck-tag ck-tag-short">课时不足</span>
                     {% else %}

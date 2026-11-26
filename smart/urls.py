@@ -20,6 +20,12 @@ urlpatterns = [
     path('lesson_records/', views.lesson_records, name='lesson_records'),
     # 订阅消息的模板 id 下发（匿名可读，模板没配时 enabled=false）
     path('notify_config/', views.notify_config, name='notify_config'),
+
+    # 请假（家长端写操作，必须登录）
+    # 口径：提交即生效（不走审批）、开课后不能请、不扣课时
+    path('leave/submit/', views.leave_submit, name='leave_submit'),
+    path('leave/cancel/', views.leave_cancel, name='leave_cancel'),
+    path('leave/list/', views.leave_list, name='leave_list'),
 ]
 
 router = SimpleRouter()

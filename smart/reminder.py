@@ -136,6 +136,22 @@ def _already_checked_in(student_id: int, session_id: int,
     ).exists()
 
 
+def _has_leave(student_id: int, session_id: int,
+               lesson_date: datetime.date) -> bool:
+    """这节课这个孩子请假了吗。
+
+    请了假还催「别忘了送孩子」，是最容易被家长当成系统出错的场景 ——
+    他明明在线上点过请假，系统却当没看见。
+
+    注意这里**实时查询**，不像 ``NotifyLog`` 那样把状态固化。
+    撤销请假后 ``status`` 变回非 active，提醒自动恢复；
+    如果写成「第一次查到请假就记一笔永久跳过」，家长撤了假也永远收不到催课。
+    """
+    # 局部 import：leave.py 也 import models，模块级互相引用容易成环
+    from .leave import has_active_leave
+    return has_active_leave(student_id, session_id, lesson_date)
+
+
 def _remain(enrollment: Enrollment) -> int:
     from django.db.models import Sum
     total = enrollment.hour_logs.aggregate(s=Sum('delta'))['s'] or 0
@@ -151,10 +167,23 @@ def collect_recipients(session: ClassSession,
         {'parent': Parent, 'student': Student, 'enrollment': Enrollment,
          'remain': int, 'skip_reason': str}
 
-    ``skip_reason`` 非空表示这个人不该发（已签到 / 课时不足），
+    ``skip_reason`` 非空表示这个人不该发（已签到 / 已请假 / 课时不足），
     但**照样要返回** —— 要留一条 ``skipped`` 记录，
     否则后台看不出「为什么这个家长没收到」，会以为是漏发了。
     """
+    # 同一节课的请假记录一次性查出来，不要在循环里逐人查 ——
+    # 一个班 20 个孩子就是 20 次查询。
+    from .models import LeaveRequest
+    left_ids = set(
+        LeaveRequest.objects
+        .filter(
+            session_id=session.id,
+            lesson_date=lesson_date,
+            status='active',
+        )
+        .values_list('student_id', flat=True)
+    )
+
     enrollments = (
         Enrollment.objects
         .filter(
@@ -171,6 +200,10 @@ def collect_recipients(session: ClassSession,
         skip = ''
         if _already_checked_in(e.student_id, session.id, lesson_date):
             skip = '已签到，不再催'
+        elif e.student_id in left_ids:
+            # 请假优先于「课时不足」：家长已经明确说了不来，
+            # 这时候提示「课时不足请充值」既没意义又像是在催钱。
+            skip = '已请假，不再催'
         elif remain <= 0:
             # 课时为 0 还催家长来上课，来了也签不了到（会被拦），
             # 等于让人白跑。这条要先于发送判断。

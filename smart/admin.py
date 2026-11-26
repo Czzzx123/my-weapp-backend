@@ -11,7 +11,7 @@ from .models import (
     Banner, LearningPost, Notice,
     Parent, Student, ParentStudent,
     Course, CourseClass, ClassSession,
-    Enrollment, HourLog, NotifyLog,
+    Enrollment, HourLog, NotifyLog, LeaveRequest,
 )
 
 
@@ -551,3 +551,72 @@ class NotifyLogAdmin(admin.ModelAdmin):
     def has_delete_permission(self, request, obj=None):
         # 删记录 = 允许重发一次。这是有意的补发入口，见类注释
         return True
+
+
+@admin.register(LeaveRequest)
+class LeaveRequestAdmin(admin.ModelAdmin):
+    """请假记录：老师看「今天谁不来」。
+
+    为什么全字段只读
+    ----------------
+    请假是**家长的意思表示**，不是老师可以随手改的数据。
+    让老师能在这里把 ``status`` 从「已请假」改成「已撤销」，
+    就等于老师能替家长销假 —— 名单会对不上，而且没人知道是谁改的。
+
+    例外：``status`` 允许改，因为老师确实需要处理两种情况：
+      · 家长打电话来说「我请错了，帮我撤一下」（家长端已开课后不能撤）
+      · 家长没请假但也没来，老师要标成「旷课」——
+        这在数据上就是「没有 active 的请假记录」，不需要改这里，
+        所以这里不需要「标记旷课」的入口。
+
+    所以实际只放行 ``status``，其余只读。改状态走 save_model，
+    保证 ``cancel_time`` 同步更新。
+    """
+
+    list_display = (
+        'id', 'lesson_date', 'weekday_display', 'student', 'course_class_name',
+        'time_text', 'status', 'reason', 'create_time',
+    )
+    list_filter = ('status', 'lesson_date', 'session__course_class')
+    search_fields = ('student__name', 'reason', 'session__course_class__name')
+    date_hierarchy = 'lesson_date'
+    ordering = ('-lesson_date', '-create_time')
+    list_select_related = ('student', 'session__course_class')
+
+    readonly_fields = (
+        'student', 'session', 'lesson_date', 'reason', 'operator',
+        'create_time', 'cancel_time',
+    )
+
+    def has_add_permission(self, request):
+        # 老师在后台代家长请假，这个需求是真实的（家长打电话来）。
+        # 但走这里手建记录很容易把 lesson_date 填错一天，
+        # 而错的那一天名单上看不出来。宁可让老师走家长小程序，
+        # 或者用签到页的「已请假」标记对齐。这里先关掉。
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return True
+
+    @admin.display(description='星期')
+    def weekday_display(self, obj):
+        return obj.session.get_weekday_display()
+
+    @admin.display(description='班级')
+    def course_class_name(self, obj):
+        return obj.session.course_class.name
+
+    @admin.display(description='上课时间')
+    def time_text(self, obj):
+        return f'{obj.session.start_time:%H:%M}-{obj.session.end_time:%H:%M}'
+
+    def save_model(self, request, obj, form, change):
+        """手工改状态时同步 ``cancel_time``。
+
+        不这么做的话，老师把一条记录改成「已撤销」，
+        ``cancel_time`` 还是空的 —— 后台看起来像「撤销了但不知道什么时候撤的」。
+        """
+        if change and obj.status != 'active' and not obj.cancel_time:
+            obj.cancel_time = timezone.now()
+            obj.operator = obj.operator or str(request.user)
+        super().save_model(request, obj, form, change)

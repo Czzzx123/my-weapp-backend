@@ -31,7 +31,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import Sum
 from django.utils import timezone
 
-from .models import ClassSession, Enrollment, HourLog
+from .models import ClassSession, Enrollment, HourLog, LeaveRequest
 
 
 class CheckinError(Exception):
@@ -236,6 +236,16 @@ def lesson_roster(class_id: int, lesson_date: datetime.date,
         )
     }
 
+    # 谁请了假 —— 一次查完，别在循环里逐人查。
+    # 老师点名时最需要这个信息：名单上有 12 个人，实际来了 9 个，
+    # 「没来的 3 个是请假了还是旷课了」必须一眼看出来，
+    # 否则要么白等，要么误给请假的孩子签到扣课时。
+    left_ids = set(
+        LeaveRequest.objects.filter(
+            session_id=session_id, lesson_date=lesson_date, status='active',
+        ).values_list('student_id', flat=True)
+    )
+
     roster = []
     for e in enrollments:
         log = signed.get(e.id)
@@ -245,5 +255,6 @@ def lesson_roster(class_id: int, lesson_date: datetime.date,
             'remain': _remain(e),
             'checked': log is not None,
             'log': log,
+            'on_leave': e.student_id in left_ids,
         })
     return roster

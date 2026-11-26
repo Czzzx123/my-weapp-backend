@@ -594,3 +594,99 @@ class NotifyLog(models.Model):
     def __str__(self):
         return (f'{self.parent} {self.lesson_date} '
                 f'{self.get_notify_type_display()}({self.get_status_display()})')
+
+
+class LeaveRequest(models.Model):
+    """请假：某一天的那一节固定课，这个孩子不来了。
+
+    为什么需要 ``lesson_date``
+    --------------------------
+    课表只存「周三 16:00-18:00」，不存具体日期（排课每周重复，落成日期
+    就要每周批量生成一批记录）。但「请假」这个动作必然指向**某一天**：
+    这周三不来，不代表下周三不来。
+
+    所以请假记录必须自带日期。``(student, session, lesson_date)``
+    三者才唯一确定「哪一节具体的课」。
+
+    为什么不扣课时
+    --------------
+    本项目口径是「签到才消课」——`HourLog` 只在 ``checkin()`` 里写。
+    家长请假 → 老师不签到 → 一课时都不扣。这是自然的，不需要额外逻辑。
+
+    早期文档写过「请假是否退课时 `[K6]`，建议提前 24h 退」，
+    那个前提是错的：根本不存在「已经扣了要退」的环节。
+    2026-11-26 用户确认口径：**请假、旷课都不扣课时**。
+
+    为什么不用审批
+    --------------
+    用户 2026-11-26 决定：**提交即生效**。理由是没有账务风险
+    （不签到就不扣课时），而「家长请了假、老师没审、最后算旷课」
+    才是真正会引起纠纷的情况。``status`` 留了 ``rejected`` 这个值，
+    但 MVP 不产生它 —— 将来若要加审批不必改表结构。
+
+    为什么撤销是改状态而不是删行
+    ----------------------------
+    删行会让「这周三请过假」这件事彻底消失。家长撤了假又后悔、
+    或者老师发现名单对不上时，没有记录就无从解释。
+    唯一约束带 ``status='active'`` 条件，撤销后就放行重新提交。
+    """
+
+    STATUS_CHOICES = (
+        ('active', '已请假'),
+        ('cancelled', '已撤销'),
+        ('rejected', '已驳回'),
+    )
+
+    student = models.ForeignKey(
+        Student, verbose_name='学生', on_delete=models.CASCADE,
+        related_name='leave_requests')
+    session = models.ForeignKey(
+        ClassSession, verbose_name='上课时段', on_delete=models.CASCADE,
+        related_name='leave_requests')
+    lesson_date = models.DateField(
+        verbose_name='请假日期',
+        help_text='哪一天的那节课。课表只存周几，请假必须落到具体日期')
+    reason = models.CharField(
+        verbose_name='请假原因', max_length=128, blank=True, default='',
+        help_text='家长填写，可不填')
+    status = models.CharField(
+        verbose_name='状态', max_length=16,
+        choices=STATUS_CHOICES, default='active')
+    operator = models.CharField(
+        verbose_name='操作人', max_length=32, blank=True, default='',
+        help_text='家长线上提交时留空；老师后台代填时写老师名字')
+    cancel_time = models.DateTimeField(
+        verbose_name='撤销时间', null=True, blank=True)
+    create_time = models.DateTimeField(verbose_name='提交时间', auto_now_add=True)
+
+    class Meta:
+        verbose_name_plural = '请假记录'
+        ordering = ['-lesson_date', '-create_time']
+        indexes = [
+            models.Index(fields=['lesson_date', 'status']),
+            models.Index(fields=['student', 'lesson_date']),
+        ]
+        constraints = [
+            # 同一节课不能请两次假。
+            #
+            # 为什么带 condition=Q(status='active')：
+            # 撤销（cancelled）之后家长应该能重新提交。若约束覆盖所有状态，
+            # 撤销记录会一直挡着，等于「撤销一次就永远请不了这节课」。
+            #
+            # 为什么 rejected 也要放行：
+            # 被驳回后家长改个理由再请是正常的，驳回记录不该成为永久阻塞。
+            models.UniqueConstraint(
+                fields=['student', 'session', 'lesson_date'],
+                condition=models.Q(status='active'),
+                name='uniq_active_leave_per_lesson',
+            ),
+        ]
+
+    def __str__(self):
+        return (f'{self.student.name} {self.lesson_date} '
+                f'{self.session.course_class.name}'
+                f'({self.get_status_display()})')
+
+    @property
+    def is_active(self) -> bool:
+        return self.status == 'active'

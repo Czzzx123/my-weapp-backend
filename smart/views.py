@@ -458,6 +458,140 @@ def notify_config(request):
     )
 
 
+# ============================================================
+# 请假（家长端，必须登录）
+#
+# 口径见 smart/leave.py 的模块注释：提交即生效、开课后不能请、不扣课时。
+# 三个接口都走 _my_student_ids 那一套越权防线 —— 请假是**写**操作，
+# 越权后果比查询更严重（能给别人的孩子请假，老师名单就乱了）。
+# ============================================================
+
+
+def _parse_date(raw: str):
+    """解析 ``YYYY-MM-DD``。返回 ``None`` 表示格式不对。
+
+    为什么不用 DRF 的 DateField：这里的三个接口都只有一两个参数，
+    为了一个日期字段引入一整个 Serializer 反而更难读。手写解析时
+    **必须**把异常接住 —— ``datetime.date.fromisoformat('')`` 会抛
+    ValueError，直接冒到 500，前端只会看到「服务异常」。
+    """
+    import datetime
+
+    try:
+        return datetime.date.fromisoformat((raw or '').strip())
+    except (ValueError, TypeError):
+        return None
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def leave_submit(request):
+    """提交请假。
+
+    参数：
+        student_id   孩子 id（必填）
+        session_id   上课时段 id（必填）
+        lesson_date  ``YYYY-MM-DD``（必填）
+        reason       原因（可选，最多 128 字）
+
+    为什么 ``lesson_date`` 必填而不能由后端按 session 推：
+    同一个「周三 16:00」既可能是这周三也可能是下周三，
+    后端推出来的大概率是「下一个周三」，而家长想请的很可能是今天。
+    推错一天，老师名单就和实际对不上 —— 这种错还没人看得出来。
+    """
+    from . import leave as leave_service
+
+    student_id = request.POST.get('student_id') or request.data.get('student_id')
+    session_id = request.POST.get('session_id') or request.data.get('session_id')
+    raw_date = request.POST.get('lesson_date') or request.data.get('lesson_date')
+    reason = request.POST.get('reason') or request.data.get('reason') or ''
+
+    try:
+        student_id = int(student_id)
+        session_id = int(session_id)
+    except (TypeError, ValueError):
+        return fail('参数不完整，请重新进入页面')
+
+    lesson_date = _parse_date(raw_date)
+    if not lesson_date:
+        return fail('请假日期格式不对')
+
+    try:
+        obj = leave_service.submit(
+            request.user, student_id, session_id, lesson_date, reason)
+    except leave_service.LeaveError as exc:
+        return fail(exc.message)
+
+    return ok(leave=_serialize_leave(obj), msg='已提交请假')
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def leave_cancel(request):
+    """撤销请假。撤销后这节课的上课提醒会恢复。
+
+    参数：``leave_id``
+    """
+    from . import leave as leave_service
+
+    try:
+        leave_id = int(request.POST.get('leave_id') or request.data.get('leave_id'))
+    except (TypeError, ValueError):
+        return fail('参数不完整，请刷新页面重试')
+
+    try:
+        obj = leave_service.cancel(request.user, leave_id)
+    except leave_service.LeaveError as exc:
+        return fail(exc.message)
+
+    return ok(leave=_serialize_leave(obj), msg='已撤销请假')
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def leave_list(request):
+    """我的请假记录 —— 包括已撤销的。
+
+    包括已撤销是有意的：家长点进去要能看到「我上周撤过一次」，
+    否则会反复怀疑自己到底提交成功没有。
+    """
+    from . import leave as leave_service
+
+    items = leave_service.my_leaves(request.user)
+    return ok(leaves=[_serialize_leave(x) for x in items])
+
+
+def _serialize_leave(obj) -> dict:
+    """请假记录的对外形态。
+
+    字段名刻意用 ``date`` 而不是模型的 ``lesson_date``：
+    前端契约里「日期」一律叫 ``date``（与课表页一致），
+    在这里改名比在前端每个页面各适配一次划算。
+    """
+    session = obj.session
+    return {
+        'id': obj.id,
+        'student': {'id': obj.student_id, 'name': obj.student.name},
+        'course_class': {
+            'id': session.course_class_id,
+            'name': session.course_class.name,
+            'teacher': session.course_class.teacher,
+            'room': session.course_class.room,
+        },
+        'session_id': obj.session_id,
+        'weekday': session.weekday,
+        'get_weekday_display': session.get_weekday_display(),
+        'start_time': session.start_time,
+        'end_time': session.end_time,
+        'date': obj.lesson_date,
+        'reason': obj.reason,
+        'status': obj.status,
+        'get_status_display': obj.get_status_display(),
+        'create_time': obj.create_time,
+        'cancel_time': obj.cancel_time,
+    }
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def update_profile(request):
