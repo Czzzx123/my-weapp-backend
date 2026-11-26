@@ -12,6 +12,10 @@ urlpatterns = [
     path('user/bind_mobile/', views.bind_mobile, name='bind_mobile'),
     path('user/update_profile/', views.update_profile, name='update_profile'),
     path('user/logout/', views.logout, name='logout'),
+
+    # 教务（家长端只读，必须登录）
+    path('schedule/', views.schedule, name='schedule'),
+    path('hours/', views.hours, name='hours'),
 ]
 
 router = SimpleRouter()

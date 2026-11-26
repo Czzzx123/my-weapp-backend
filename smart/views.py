@@ -2,6 +2,7 @@ import logging
 import time
 
 import requests
+from django.db.models import Sum
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.mixins import ListModelMixin
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -12,13 +13,23 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from libs.wechat import WeChatConfigError, WeChatError, code2session
 
 from . import avatar_service, login_service, sms
-from .models import Banner, LearningPost, Notice
+from .models import (
+    Banner,
+    ClassSession,
+    Enrollment,
+    LearningPost,
+    Notice,
+    ParentStudent,
+    Student,
+)
 from .serializer import (
     BannerSerializer,
     BindMobileSerializer,
+    HourItemSerializer,
     LearningPostSerializer,
     LoginSerializer,
     NoticeSerializer,
+    ScheduleItemSerializer,
     SendSmsSerializer,
     UpdateProfileSerializer,
 )
@@ -228,6 +239,129 @@ def logout(request):
     删掉本地 token 即可。这里只做语义占位，方便前端统一调用。
     """
     return ok(message='已退出')
+
+
+# ============================================================
+# 教务：课表 / 课时（家长端只读）
+# ============================================================
+
+
+def _my_student_ids(parent) -> list:
+    """当前家长名下**在读**的孩子 id 列表。
+
+    这里是所有家长端教务接口的唯一入口，必须统一走它：
+    漏掉 ``status='active'`` 会把已退班的孩子也带出来；
+    漏掉家长维度过滤就是越权（家长 A 能看到家长 B 的孩子课表）。
+    """
+    return list(
+        ParentStudent.objects.filter(
+            parent=parent, student__status='active',
+        ).values_list('student_id', flat=True)
+    )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def schedule(request):
+    """我的课表 —— 每周固定安排。
+
+    **只返回「每周固定」的常规课表，不含临时调课 / 单次停课。**
+    ``ClassSession.status='suspended'`` 表示这个时段长期停掉，
+    这类记录照样返回，但带 ``status`` 字段让前端标灰显示，
+    而不是直接过滤掉 —— 直接不返回会让家长以为「孩子这周没课」，
+    实际是「课停了但没人通知」，两种情况必须让家长看得出来。
+
+    匿名不可访问：课表含孩子姓名与班级，属隐私数据。
+    """
+    student_ids = _my_student_ids(request.user)
+    if not student_ids:
+        # 没绑孩子 / 孩子都已退班：返回空数组，不要报错。
+        # 前端据此显示「还没有课表」，报错会让家长以为系统坏了。
+        return ok(schedule=[])
+
+    qs = (
+        ClassSession.objects
+        .filter(
+            course_class__enrollments__student_id__in=student_ids,
+            # 已结班的班级不该再出现在课表上，否则家长会去上课
+            course_class__status='active',
+            course_class__enrollments__status='active',
+        )
+        # 一个班有多个时段时，同一学生会被 join 出多条 —— 这正是我们要的
+        .select_related('course_class', 'course_class__course')
+        .distinct()
+        .order_by('weekday', 'start_time')
+    )
+
+    # 上面只拿到时段，拿不到「是哪个孩子的」。所以按学生逐个查，
+    # 而不是一次查完再拼 —— 孩子数量在个位数，多几次查询代价很小，
+    # 换来的是代码一眼能看懂（谁的孩子对应哪些时段清清楚楚）。
+    items = []
+    for sid in student_ids:
+        student = Student.objects.filter(id=sid).first()
+        if not student:
+            continue
+        enrolled_class_ids = Enrollment.objects.filter(
+            student_id=sid, status='active',
+            course_class__status='active',
+        ).values_list('course_class_id', flat=True)
+
+        if not enrolled_class_ids:
+            continue
+
+        for s in ClassSession.objects.filter(
+            course_class_id__in=list(enrolled_class_ids)
+        ).select_related('course_class', 'course_class__course').order_by(
+            'weekday', 'start_time'
+        ):
+            items.append({
+                'student': {'id': student.id, 'name': student.name},
+                'course_class': {
+                    'id': s.course_class_id,
+                    'name': s.course_class.name,
+                    'course': {'name': s.course_class.course.name},
+                    'teacher': s.course_class.teacher,
+                    'room': s.course_class.room,
+                },
+                'id': s.id,
+                'weekday': s.weekday,
+                'get_weekday_display': s.get_weekday_display(),
+                'start_time': s.start_time,
+                'end_time': s.end_time,
+                'status': s.status,
+                'get_status_display': s.get_status_display(),
+                'substitute_teacher': s.substitute_teacher,
+            })
+
+    # 孩子间顺序按 id，同一孩子内按周几 + 时间
+    serializer = ScheduleItemSerializer(items, many=True)
+    return ok(schedule=serializer.data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def hours(request):
+    """我的课时 —— 每个孩子每个班的额度与剩余。
+
+    ``remain`` 实时由 ``HourLog`` 流水汇总得出，不读任何冗余列。
+    已结课 / 已退费的报名照样返回，前端按 ``status`` 分组显示，
+    直接过滤掉家长就查不到历史账了。
+    """
+    student_ids = _my_student_ids(request.user)
+    if not student_ids:
+        return ok(hours=[])
+
+    qs = (
+        Enrollment.objects
+        .filter(student_id__in=student_ids)
+        .select_related('student', 'course_class', 'course_class__course')
+        # 一次 annotate 把所有流水的和算出来，避免每个报名再单独聚合一次
+        .annotate(_sum_delta=Sum('hour_logs__delta'))
+        .order_by('student_id', '-enroll_time')
+    )
+
+    serializer = HourItemSerializer(qs, many=True)
+    return ok(hours=serializer.data)
 
 
 @api_view(['POST'])

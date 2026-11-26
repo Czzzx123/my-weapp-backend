@@ -448,6 +448,10 @@ class HourLog(models.Model):
         null=True, blank=True,
         related_name='hour_logs',
         help_text='手工调整时留空')
+    lesson_date = models.DateField(
+        verbose_name='上课日期', null=True, blank=True,
+        help_text='消课必填：这是哪一天的那节课。'
+                  '充值/冲正/调整可留空')
     operator = models.CharField(
         verbose_name='操作人', max_length=32, blank=True, default='')
     remark = models.CharField(
@@ -459,8 +463,30 @@ class HourLog(models.Model):
         ordering = ['-create_time']
         indexes = [
             models.Index(fields=['enrollment', 'create_time']),
+            models.Index(fields=['lesson_date']),
+        ]
+        constraints = [
+            # 同一节课不能扣两次课时。
+            #
+            # 为什么必须要有这条：老师和家长都可能手滑点两次「签到」，
+            # 而 delta=-1 的流水记两条，从账面上完全看不出是重复提交
+            # 还是孩子真的上了两节课 —— 只能靠人工比对时间戳去猜。
+            #
+            # 为什么加 condition=Q(reason='consumed')：
+            # 冲正（refund）本来就要针对同一节课反向记一笔 +1，
+            # 如果约束覆盖所有 reason，冲正会被自己挡住。
+            #
+            # 为什么 session 为空的记录不会互相冲突：
+            # SQL 的唯一约束里 NULL 不等于 NULL，所以手工调整
+            # （session 留空）可以记任意多条，不会误拦。
+            models.UniqueConstraint(
+                fields=['enrollment', 'session', 'lesson_date'],
+                condition=models.Q(reason='consumed'),
+                name='uniq_consumed_per_lesson',
+            ),
         ]
 
     def __str__(self):
         sign = '+' if self.delta > 0 else ''
-        return f'{self.enrollment} {sign}{self.delta} ({self.get_reason_display()})'
+        when = f' {self.lesson_date}' if self.lesson_date else ''
+        return f'{self.enrollment} {sign}{self.delta}{when} ({self.get_reason_display()})'
