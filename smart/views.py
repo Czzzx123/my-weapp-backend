@@ -412,6 +412,33 @@ def lesson_records(request):
     return ok(records=serializer.data)
 
 
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def notify_config(request):
+    """订阅消息的前端配置 —— 模板 id 从后端下发，不写死在小程序里。
+
+    为什么不让前端硬编码 tmplId：
+    模板 id 属于「微信后台配置」，跟运营动作绑定，不跟代码版本绑定。
+    写死在前端的话，每次换模板（改文案、字段对不齐）都要走一遍
+    小程序发版审核，而审核通常要好几天。下发就只是改个环境变量。
+
+    匿名可访问：家长还没登录时也可能想先授权（登录页引导），
+    这时没有 token。模板 id 本身不是敏感信息。
+
+    返回 ``template_id`` 为空字符串表示「后台还没配模板」，
+    前端据此隐藏授权按钮，而不是点了才发现失败。
+    """
+    from django.conf import settings
+
+    template_id = (getattr(settings, 'WECHAT_TEMPLATE_CHECKIN', '') or '').strip()
+    return ok(
+        # 上课签到提醒（签到成功后发给家长）
+        template_id=template_id,
+        # 是否可用。模板没配时前端不显示「开启提醒」按钮
+        enabled=bool(template_id),
+    )
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def update_profile(request):

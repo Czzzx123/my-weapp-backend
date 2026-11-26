@@ -16,7 +16,7 @@ import datetime
 from decimal import Decimal
 
 from django.db import IntegrityError, transaction
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -455,3 +455,31 @@ class LessonRecordsApiTests(BaseCheckinTestCase):
         self.assertEqual(rec['lesson_date'], '2026-11-25')
         self.assertEqual(rec['start_time'], '16:00')
         self.assertEqual(rec['weekday_label'], '周三')
+
+
+class NotifyConfigTests(SimpleTestCase):
+    """订阅消息模板 id 下发。
+
+    为什么要测这个「只返回两个字段」的接口：
+    它是匿名可访问的（登录页也要能拿到模板 id 去授权），
+    一旦被误加上 IsAuthenticated，家长在未登录时就永远授权不了，
+    而这个错误的表现是「点了没反应」，很难查。
+    """
+
+    def test_anonymous_can_read(self):
+        resp = self.client.get('/smart/notify_config/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['code'], 100)
+
+    @override_settings(WECHAT_TEMPLATE_CHECKIN='')
+    def test_disabled_when_template_missing(self):
+        """模板没配时 enabled=false，前端据此隐藏按钮。"""
+        body = self.client.get('/smart/notify_config/').json()
+        self.assertEqual(body['template_id'], '')
+        self.assertFalse(body['enabled'])
+
+    @override_settings(WECHAT_TEMPLATE_CHECKIN='TPL_abc123')
+    def test_returns_template_when_configured(self):
+        body = self.client.get('/smart/notify_config/').json()
+        self.assertEqual(body['template_id'], 'TPL_abc123')
+        self.assertTrue(body['enabled'])

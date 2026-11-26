@@ -18,6 +18,8 @@ urlpatterns = [
     path('hours/', views.hours, name='hours'),
     # 上课记录：孩子哪天上了哪节课、扣了几课时（只含消课）
     path('lesson_records/', views.lesson_records, name='lesson_records'),
+    # 订阅消息的模板 id 下发（匿名可读，模板没配时 enabled=false）
+    path('notify_config/', views.notify_config, name='notify_config'),
 ]
 
 router = SimpleRouter()
