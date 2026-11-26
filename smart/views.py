@@ -17,6 +17,7 @@ from .models import (
     Banner,
     ClassSession,
     Enrollment,
+    HourLog,
     LearningPost,
     Notice,
     ParentStudent,
@@ -27,6 +28,7 @@ from .serializer import (
     BindMobileSerializer,
     HourItemSerializer,
     LearningPostSerializer,
+    LessonRecordSerializer,
     LoginSerializer,
     NoticeSerializer,
     ScheduleItemSerializer,
@@ -362,6 +364,52 @@ def hours(request):
 
     serializer = HourItemSerializer(qs, many=True)
     return ok(hours=serializer.data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def lesson_records(request):
+    """上课记录 —— 孩子哪天上了哪节课、扣了几课时。
+
+    **只返回消课记录（reason='consumed'），不含充值/冲正/手工调整。**
+    家长打开这一页想看的是「孩子上过哪些课」，不是「账怎么平的」。
+    充值记录在课时页的「共 N / 已用 M」里已经体现，重复展示只会让人算不清。
+
+    撤销过的记录照样返回，带 ``is_revoked``。若直接过滤掉，
+    家长之前看到的「11月25日 扣 1 课时」会凭空消失，他会以为系统偷偷改账。
+
+    支持 ``?student_id=`` 只看某一个孩子；不传则返回名下全部在读孩子。
+    """
+    student_ids = _my_student_ids(request.user)
+    if not student_ids:
+        return ok(records=[])
+
+    # 前端传的 student_id 必须在自己的范围内。不校验就是越权：
+    # 改个数字就能看到别人家孩子的上课记录。
+    raw_sid = request.GET.get('student_id', '')
+    if raw_sid:
+        if not raw_sid.isdigit() or int(raw_sid) not in student_ids:
+            return fail('无权查看该学生的记录', code=403)
+        student_ids = [int(raw_sid)]
+
+    qs = (
+        HourLog.objects
+        .filter(
+            enrollment__student_id__in=student_ids,
+            reason='consumed',
+        )
+        .select_related(
+            'enrollment__student',
+            'enrollment__course_class__course',
+            'session',
+        )
+        # 按上课日期倒序，同一天按签到时间倒序 ——
+        # 家长最关心最近上的课，而不是最近被操作的课（补签会打乱后者）
+        .order_by('-lesson_date', '-create_time')
+    )
+
+    serializer = LessonRecordSerializer(qs, many=True)
+    return ok(records=serializer.data)
 
 
 @api_view(['POST'])

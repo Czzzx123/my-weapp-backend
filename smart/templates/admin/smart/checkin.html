@@ -1,0 +1,266 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block extrastyle %}
+{{ block.super }}
+<style>
+  .ck-wrap { max-width: 980px; }
+  .ck-card {
+    background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;
+    padding: 20px; margin-bottom: 20px;
+  }
+  .ck-title { font-size: 15px; font-weight: 600; margin: 0 0 16px; color: #1f2733; }
+  .ck-row { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; }
+  .ck-field { display: flex; flex-direction: column; gap: 6px; }
+  .ck-field label { font-size: 13px; color: #6b7280; }
+  .ck-field select, .ck-field input {
+    padding: 7px 10px; border: 1px solid #d5d9e0; border-radius: 6px;
+    font-size: 14px; min-width: 200px; background: #fff;
+  }
+  .ck-btn {
+    padding: 8px 18px; border-radius: 6px; border: none; cursor: pointer;
+    font-size: 14px; background: #2f6bed; color: #fff;
+  }
+  .ck-btn:hover { background: #2559c9; }
+  .ck-btn-ghost { background: #eef2ff; color: #2f6bed; }
+  .ck-btn-ghost:hover { background: #dde5ff; }
+  .ck-btn-danger { background: #f5544b; }
+  .ck-btn-danger:hover { background: #d93f36; }
+
+  table.ck-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  table.ck-table th {
+    text-align: left; padding: 10px 12px; background: #f8f9fb;
+    border-bottom: 2px solid #e5e7eb; font-weight: 600; color: #374151;
+  }
+  table.ck-table td { padding: 10px 12px; border-bottom: 1px solid #f0f1f4; }
+  table.ck-table tr.ck-checked td { background: #f0fdf4; }
+  table.ck-table tr.ck-short td { background: #fef2f2; }
+
+  .ck-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 12px; line-height: 18px;
+  }
+  .ck-tag-ok { background: #dcfce7; color: #15803d; }
+  .ck-tag-wait { background: #f3f4f6; color: #6b7280; }
+  .ck-tag-short { background: #fee2e2; color: #b91c1c; }
+  .ck-tag-revoked { background: #f3f4f6; color: #9ca3af; text-decoration: line-through; }
+
+  .ck-msg { padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 14px; }
+  .ck-msg-error { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
+  .ck-msg-ok { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
+  .ck-msg-warn { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
+
+  .ck-hint { font-size: 13px; color: #9aa3af; margin-top: 8px; line-height: 1.7; }
+  .ck-empty { padding: 40px; text-align: center; color: #9aa3af; font-size: 14px; }
+  .ck-checkall { font-size: 13px; color: #6b7280; cursor: pointer; user-select: none; }
+  .ck-remain-short { color: #dc2626; font-weight: 600; }
+</style>
+{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">首页</a>
+  &rsaquo; 签到消课
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="ck-wrap">
+
+  {% if messages %}
+    {% for m in messages %}
+      <div class="ck-msg ck-msg-{{ m.tags }}">{{ m }}</div>
+    {% endfor %}
+  {% endif %}
+
+  <!-- ============ 选班 / 选日期 ============ -->
+  <div class="ck-card">
+    <h2 class="ck-title">1. 选择班级与上课时间</h2>
+    <form method="get" class="ck-row">
+      <div class="ck-field">
+        <label for="class_id">班级</label>
+        <select name="class_id" id="class_id" onchange="this.form.submit()">
+          <option value="">— 请选择 —</option>
+          {% for c in classes %}
+            <option value="{{ c.id }}" {% if c.id == selected_class_id %}selected{% endif %}>
+              {{ c.name }}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="ck-field">
+        <label for="session_id">上课时段</label>
+        <select name="session_id" id="session_id" onchange="this.form.submit()">
+          <option value="">— 请选择 —</option>
+          {% for s in sessions %}
+            <option value="{{ s.id }}" {% if s.id == selected_session_id %}selected{% endif %}>
+              {{ s.get_weekday_display }} {{ s.start_time|time:"H:i" }}-{{ s.end_time|time:"H:i" }}
+              {% if s.status == 'suspended' %}（已停课）{% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="ck-field">
+        <label for="lesson_date">上课日期</label>
+        <input type="date" name="lesson_date" id="lesson_date"
+               value="{{ lesson_date|date:'Y-m-d' }}" onchange="this.form.submit()">
+      </div>
+
+      <button type="submit" class="ck-btn ck-btn-ghost">查询名单</button>
+    </form>
+
+    <p class="ck-hint">
+      必须先选时段：一节课要指明「哪个班的哪一节」，否则系统无法防止重复签到。
+    </p>
+  </div>
+
+  <!-- ============ 名单 ============ -->
+  {% if roster is not None %}
+    <div class="ck-card">
+      <h2 class="ck-title">
+        2. 勾选到场学生
+        <span style="font-weight:400;color:#9aa3af;font-size:13px;">
+          （共 {{ roster|length }} 人）
+        </span>
+      </h2>
+
+      {% if not roster %}
+        <div class="ck-empty">
+          这个班还没有在读学生，或学生都已结课 / 退费。<br>
+          请先在「报名记录」里添加报名。
+        </div>
+      {% else %}
+        <form method="post">
+          {% csrf_token %}
+          <input type="hidden" name="class_id" value="{{ selected_class_id }}">
+          <input type="hidden" name="session_id" value="{{ selected_session_id }}">
+          <input type="hidden" name="lesson_date" value="{{ lesson_date|date:'Y-m-d' }}">
+
+          <table class="ck-table">
+            <thead>
+              <tr>
+                <th style="width:44px;">
+                  <input type="checkbox" id="ck-all" class="ck-checkall" checked title="全选/全不选">
+                </th>
+                <th>学生</th>
+                <th style="width:120px;">剩余课时</th>
+                <th style="width:120px;">本节课状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in roster %}
+                <tr class="{% if row.checked %}ck-checked{% elif row.remain <= 0 %}ck-short{% endif %}">
+                  <td>
+                    {% if row.checked %}
+                      {# 已签到的不给勾选框，避免误解成「还能再签一次」 #}
+                      <span style="color:#15803d;">&#10003;</span>
+                    {% elif row.remain <= 0 %}
+                      <input type="checkbox" class="ck-item" disabled>
+                    {% else %}
+                      <input type="checkbox" name="enrollment_ids" value="{{ row.enrollment.id }}"
+                             class="ck-item" checked>
+                    {% endif %}
+                  </td>
+                  <td>{{ row.student.name }}</td>
+                  <td>
+                    {% if row.remain <= 0 %}
+                      <span class="ck-remain-short">{{ row.remain }}</span>
+                    {% else %}
+                      {{ row.remain }}
+                    {% endif %}
+                  </td>
+                  <td>
+                    {% if row.checked %}
+                      <span class="ck-tag ck-tag-ok">已签到</span>
+                    {% elif row.remain <= 0 %}
+                      <span class="ck-tag ck-tag-short">课时不足</span>
+                    {% else %}
+                      <span class="ck-tag ck-tag-wait">未签到</span>
+                    {% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+
+          <div style="margin-top:20px;display:flex;align-items:center;gap:12px;">
+            <button type="submit" class="ck-btn">确认签到（每人扣 1 课时）</button>
+            <span class="ck-hint" style="margin:0;">
+              签到后会给家长发微信通知；签错了可在下方「今日已签到」里撤销。
+            </span>
+          </div>
+        </form>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  <!-- ============ 当天已签到（可撤销） ============ -->
+  {% if roster is not None and roster %}
+    {% if signed_logs %}
+      <div class="ck-card">
+        <h2 class="ck-title">3. 这节课已签到（签错了可撤销）</h2>
+        <table class="ck-table">
+          <thead>
+            <tr>
+              <th>学生</th>
+              <th style="width:200px;">签到时间</th>
+              <th style="width:120px;">操作人</th>
+              <th style="width:100px;">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for log in signed_logs %}
+              <tr>
+                <td>
+                  {{ log.enrollment.student.name }}
+                  {% if log.is_revoked %}
+                    <span class="ck-tag ck-tag-revoked">已撤销</span>
+                  {% endif %}
+                </td>
+                <td>{{ log.create_time|date:"Y-m-d H:i:s" }}</td>
+                <td>{{ log.operator|default:"—" }}</td>
+                <td>
+                  {% if log.is_revoked %}
+                    <span style="color:#9ca3af;font-size:13px;">—</span>
+                  {% else %}
+                    <form method="post" style="display:inline;"
+                          onsubmit="return confirm('确定撤销 {{ log.enrollment.student.name }} 的签到？\n\n会退回 1 课时，原记录保留可查。撤销后可重新签到。');">
+                      {% csrf_token %}
+                      <input type="hidden" name="action" value="revoke">
+                      <input type="hidden" name="log_id" value="{{ log.id }}">
+                      <input type="hidden" name="class_id" value="{{ selected_class_id }}">
+                      <input type="hidden" name="session_id" value="{{ selected_session_id }}">
+                      <input type="hidden" name="lesson_date" value="{{ lesson_date|date:'Y-m-d' }}">
+                      <button type="submit" class="ck-btn ck-btn-danger"
+                              style="padding:5px 12px;font-size:13px;">撤销</button>
+                    </form>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <p class="ck-hint">
+          撤销不会删除记录，而是标为「已撤销」并补一笔 +1 的冲正流水。
+          这样任何一天的余额都能顺着流水算回去。
+        </p>
+      </div>
+    {% endif %}
+  {% endif %}
+
+</div>
+
+<script>
+  // 全选/全不选。只作用于可勾选的项 —— 已签到与课时不足的行没有 checkbox。
+  var all = document.getElementById('ck-all');
+  if (all) {
+    all.addEventListener('change', function () {
+      document.querySelectorAll('.ck-item:not([disabled])').forEach(function (el) {
+        el.checked = all.checked;
+      });
+    });
+  }
+</script>
+{% endblock %}

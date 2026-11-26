@@ -258,3 +258,47 @@ class HourItemSerializer(serializers.Serializer):
         pct = round(remain / obj.total_hours * 100)
         # 超额消课（remain 为负）时进度条要贴底，不能出现负宽度
         return max(0, min(100, pct))
+
+
+class LessonRecordSerializer(serializers.Serializer):
+    """一条消课记录：什么时候、上了哪节课、扣了多少。
+
+    **这是给家长看「签到记录」用的，不是账本全貌。**
+    只暴露 ``reason='consumed'`` 的流水，充值/冲正/调整不出现在这里 ——
+    家长关心「孩子上了哪些课」，不是「账怎么平的」。
+    冲正造成的课时变动仍会体现，因为消课记录总额变了。
+
+    撤销过的记录照样返回，带 ``is_revoked`` 标记。理由同课时页：
+    家长如果看到「11月25日 扣了 1 课时」后来消失了，会以为系统在偷偷改账；
+    保留下来并标「已撤销」，他能自己对上。
+    """
+
+    id = serializers.IntegerField()
+    student_id = serializers.IntegerField(source='enrollment.student.id')
+    student_name = serializers.CharField(source='enrollment.student.name')
+    class_name = serializers.CharField(source='enrollment.course_class.name')
+    course_name = serializers.CharField(source='enrollment.course_class.course.name')
+
+    delta = serializers.IntegerField()
+    lesson_date = serializers.DateField(format='%Y-%m-%d')
+    # 上课时间只取开始时刻：家长要的是「几点上的课」，
+    # 结束时间在这一页没信息量，反而让每行更长
+    start_time = serializers.SerializerMethodField()
+    weekday_label = serializers.SerializerMethodField()
+
+    is_revoked = serializers.BooleanField()
+    operator = serializers.CharField()
+    # 记录时间 = 老师点签到的时刻，与 lesson_date（上课那天）可能不同：
+    # 补签现象很常见，两个时间都给出，家长才看得出「今天补了上周的课」
+    create_time = serializers.DateTimeField(format='%Y-%m-%d %H:%M')
+
+    def get_start_time(self, obj):
+        if not obj.session:
+            # 手工调整的消课可能没挂时段
+            return ''
+        return obj.session.start_time.strftime('%H:%M')
+
+    def get_weekday_label(self, obj):
+        if not obj.session:
+            return ''
+        return obj.session.get_weekday_display()

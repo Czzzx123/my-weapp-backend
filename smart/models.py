@@ -456,6 +456,12 @@ class HourLog(models.Model):
         verbose_name='操作人', max_length=32, blank=True, default='')
     remark = models.CharField(
         verbose_name='备注', max_length=64, blank=True, default='')
+    is_revoked = models.BooleanField(
+        verbose_name='已撤销', default=False,
+        help_text='签错了撤销时打标。撤销不是删行 —— '
+                  '账本必须留住「曾经扣过、又被冲回」这个事实')
+    revoked_time = models.DateTimeField(
+        verbose_name='撤销时间', null=True, blank=True)
     create_time = models.DateTimeField(verbose_name='记录时间', auto_now_add=True)
 
     class Meta:
@@ -466,7 +472,7 @@ class HourLog(models.Model):
             models.Index(fields=['lesson_date']),
         ]
         constraints = [
-            # 同一节课不能扣两次课时。
+            # 同一节课不能重复扣课时。
             #
             # 为什么必须要有这条：老师和家长都可能手滑点两次「签到」，
             # 而 delta=-1 的流水记两条，从账面上完全看不出是重复提交
@@ -476,12 +482,19 @@ class HourLog(models.Model):
             # 冲正（refund）本来就要针对同一节课反向记一笔 +1，
             # 如果约束覆盖所有 reason，冲正会被自己挡住。
             #
+            # 为什么还要加 is_revoked=False：
+            # 签错了要能「撤销后重新签到」。撤销只是给原记录打标并补一笔
+            # refund，原记录仍在表里；若约束不过滤已撤销的记录，
+            # 重新签到会撞上那条历史记录，等于永远签不了。
+            # 加上这个条件后，同一节课最多只有一条「有效消课」，
+            # 撤销过的可以有任意多条 —— 正好符合「签错几次都留痕」。
+            #
             # 为什么 session 为空的记录不会互相冲突：
             # SQL 的唯一约束里 NULL 不等于 NULL，所以手工调整
             # （session 留空）可以记任意多条，不会误拦。
             models.UniqueConstraint(
                 fields=['enrollment', 'session', 'lesson_date'],
-                condition=models.Q(reason='consumed'),
+                condition=models.Q(reason='consumed', is_revoked=False),
                 name='uniq_consumed_per_lesson',
             ),
         ]
@@ -489,4 +502,5 @@ class HourLog(models.Model):
     def __str__(self):
         sign = '+' if self.delta > 0 else ''
         when = f' {self.lesson_date}' if self.lesson_date else ''
-        return f'{self.enrollment} {sign}{self.delta}{when} ({self.get_reason_display()})'
+        revoked = ' [已撤销]' if self.is_revoked else ''
+        return f'{self.enrollment} {sign}{self.delta}{when} ({self.get_reason_display()}){revoked}'

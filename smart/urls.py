@@ -16,6 +16,8 @@ urlpatterns = [
     # 教务（家长端只读，必须登录）
     path('schedule/', views.schedule, name='schedule'),
     path('hours/', views.hours, name='hours'),
+    # 上课记录：孩子哪天上了哪节课、扣了几课时（只含消课）
+    path('lesson_records/', views.lesson_records, name='lesson_records'),
 ]
 
 router = SimpleRouter()

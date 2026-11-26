@@ -239,6 +239,34 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 WECHAT_APPID = os.getenv('WECHAT_APPID', '')
 WECHAT_APPSECRET = os.getenv('WECHAT_APPSECRET', '')
 
+# 签到成功的订阅消息模板 id（公众平台 → 功能 → 订阅消息 → 我的模板）。
+# 留空则跳过通知，签到照常进行 —— 通知是附加动作，不能影响账务。
+WECHAT_TEMPLATE_CHECKIN = os.getenv('WECHAT_TEMPLATE_CHECKIN', '')
+
+# 订阅消息点开后跳转的小程序版本：developer / trial / formal。
+# 开发期填 developer，否则手机上点通知会打开一个不存在的正式版页面。
+WECHAT_MINIPROGRAM_STATE = os.getenv('WECHAT_MINIPROGRAM_STATE', '')
+
+# ============================================================
+# 后台菜单（simpleui）
+# ============================================================
+#
+# 签到页是独立视图、不是 ModelAdmin，simpleui 不会自动生成菜单，
+# 不配这里老师就只能手敲 /wl-manage/checkin/ 才能进去 —— 等于没有入口。
+#
+# system_keep=True 表示「保留系统自动生成的菜单，把我这段追加在后面」。
+# 设成 False 会把 Parent/Student/Enrollment 等全部菜单吞掉，只剩这里列的。
+SIMPLEUI_CONFIG = {
+    'system_keep': True,
+    'menus': [
+        {
+            'name': '签到消课',
+            'icon': 'fas fa-check-circle',
+            'url': '/wl-manage/checkin/',
+        },
+    ],
+}
+
 # ============================================================
 # 公开访问地址
 # ============================================================
