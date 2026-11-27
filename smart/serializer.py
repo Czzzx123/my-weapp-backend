@@ -1,6 +1,7 @@
 import re
 
 from django.db.models import Sum
+from django.utils import timezone
 from rest_framework import serializers
 
 from .models import Banner, LearningPost, Notice
@@ -57,18 +58,33 @@ class LearningPostSerializer(serializers.ModelSerializer):
 
     ``date`` 输出 ``10月18日`` 这种中文短格式，而不是 ``2026-10-18``。
     理由同上：这是首页卡片上直接显示给人看的文案，格式对齐就不必在前端
-    再写一层 formatDate。跨年场景下会丢掉年份，但「上课日常」只看近期内容，
-    且后端按 ``-create_time`` 排序，不存在排序歧义。
+    再写一层 formatDate。
+
+    **跨年补年份（2026-11-27 改）**：原来注释写的是「跨年会丢年份，
+    但上课日常只看近期内容」，这句在「只看 3 条」的时代成立 ——
+    3 条卡最多回溯一两周，永远碰不到去年。改成无限滚动之后不成立了：
+    家长一直往下滑就能翻到去年，「10月18日」到底是今年还是去年的，
+    卡片上根本看不出来。
+    现在按「今年省略年份、往年补全年份」输出，近期版面一个字没变，
+    翻到历史内容时自动变成 ``2025年10月18日``。
     """
 
     course = serializers.CharField(source='course_name', read_only=True)
-    date = serializers.DateTimeField(
-        source='create_time', format='%m月%d日', read_only=True)
+    date = serializers.SerializerMethodField()
 
     class Meta:
         model = LearningPost
         fields = ['id', 'title', 'course', 'content', 'img', 'theme', 'date']
         read_only_fields = fields
+
+    def get_date(self, obj) -> str:
+        # USE_TZ=True 时 create_time 是 UTC 的 aware datetime，
+        # 直接用它的 month/day 会在凌晨 0~8 点算成前一天。
+        # 必须 localtime 到 Asia/Shanghai 再取日期。
+        local = timezone.localtime(obj.create_time)
+        if local.year == timezone.localtime().year:
+            return f'{local.month}月{local.day}日'
+        return f'{local.year}年{local.month}月{local.day}日'
 
 
 class SendSmsSerializer(serializers.Serializer):

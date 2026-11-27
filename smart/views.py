@@ -1,8 +1,10 @@
+import base64
 import logging
 import time
+from datetime import datetime
 
 import requests
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.mixins import ListModelMixin
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -96,20 +98,134 @@ class LearningPostView(GenericViewSet, ListModelMixin):
 
     ``is_delete=False`` 在这里过滤，而不是靠 queryset 的默认 manager：
     后台是软删除（``is_delete`` 打勾），硬删会让已发出的分享链接 404。
+
+    **分页用游标（``?before=<cursor>``）而不是页码。**
+    2026-11-27 之前这里写死 ``[:3]``，前端也只有「查看全部」一个死链，
+    后来产品口径改成「首页一直往下滑就是全部」。
+    选游标不选 ``?page=2`` 的原因：家长正划着的时候运营发了一条新动态，
+    页码分页会让整体偏移一格 —— 第 1 页最后一条在第 2 页又来一遍，
+    或者客户端正加载着的那条被挤掉。游标锚在**「发布时间 + id」上**，
+    插入新记录不影响已经翻过的位置，翻页期间绝不会重复也不会漏。
+
+    ``has_more`` 用「多取一条」判断，不用 ``COUNT(*)``：
+    这张表会一直增长，每次翻页都全表 count 是白花的开销。
+
+    **排序必须是 ``-create_time, -id``，不能是 ``-id``。**
+    这个坑 2026-11-27 踩过一次：当时为了「游标严密」把排序改成 ``-id``，
+    结果运营补录一条去年的活动，它 id 最大、create_time 最旧，
+    直接窜到列表最顶端 —— 家长看到的最新动态其实是一年前的。
+    id 是**录入顺序**，create_time 才是**发布时间**，两者不是一回事。
+    ``-id`` 只用来打破 create_time 并列（同一批导入的数据常撞在一起）。
     """
 
     queryset = LearningPost.objects.filter(is_delete=False)
     serializer_class = LearningPostSerializer
-    # 首页只展示近期几条，不分页。前端 WXML 也没有上拉加载，
-    # 突然返回 20 条会让首页拉得很长，反而难扫读。
+    # 不用 DRF 的分页器：它会改写响应体成 {count, next, results}，
+    # 这个接口的契约是平铺的 {code, msg, daily}，改了前端就要跟着改。
     pagination_class = None
 
+    # 一页 6 条。为什么不是 3：一屏大约看得到 2~3 张卡，
+    # 6 条能保证「滑到底部时下一批已经在路上」，不会一顿一顿地等。
+    DEFAULT_PAGE_SIZE = 6
+    # 上限 20，防止有人手写 ?page_size=9999 拖垮数据库
+    MAX_PAGE_SIZE = 20
+
+    # 游标内部的字段分隔符。用 '|' 是因为它不会出现在 isoformat 里。
+    _CURSOR_SEP = '|'
+
     def list(self, request, *args, **kwargs):
-        # 首页版面固定 3 张卡（与既有 mock 数据一致），
-        # 多的留给「查看全部」页（未做），这里直接切掉，避免前端再截一次。
-        queryset = self.filter_queryset(self.get_queryset())[:3]
-        serializer = self.get_serializer(queryset, many=True)
-        return ok(daily=serializer.data)
+        qs = self.filter_queryset(self.get_queryset())
+
+        # ---- 游标过滤 ----
+        # 游标编码了「上一条的 create_time + id」两项。只带 id 是不够的：
+        # 排序按 create_time，若只按 id 过滤，遇到「id 大但时间早」的记录
+        # 会直接跳过一大片（或反过来重复）。
+        before = request.query_params.get('before')
+        if before:
+            decoded = self._decode_cursor(before)
+            if decoded:
+                ts, pk = decoded
+                # 严格小于 (ts, pk) 的记录。
+                # 拆成两段 OR 而不是简单 `create_time__lte=ts`：
+                # 后者会把同一时刻的其余记录重复发一遍（它们不比 ts 更小）。
+                qs = qs.filter(
+                    Q(create_time__lt=ts) | Q(create_time=ts, id__lt=pk))
+            elif before.isdigit() and int(before) > 0:
+                # 兼容裸数字游标（早期调试留的）。
+                # 生产前端一律透传 next_cursor，不会走到这里；
+                # 留着是为了能直接 curl 手敲一个数字验证。
+                qs = qs.filter(id__lt=min(int(before), 2 ** 63 - 1))
+            # 其余情况（乱码、负数、空串）当「没有游标」处理 → 第一页。
+            # 首页为了一个可选参数整屏报错不值得。
+
+        page_size = self._page_size(request)
+        rows = list(qs.order_by('-create_time', '-id')[:page_size + 1])
+        has_more = len(rows) > page_size
+        rows = rows[:page_size]
+
+        serializer = self.get_serializer(rows, many=True)
+        return ok(
+            daily=serializer.data,
+            has_more=has_more,
+            # 下一页的请求参数，前端**原样透传**回 `?before=` 即可，
+            # 不要去解析它 —— 内部结构随时可能变。
+            next_cursor=self._encode_cursor(rows[-1]) if (has_more and rows) else None,
+        )
+
+    def _encode_cursor(self, obj) -> str:
+        """把「发布时间 + id」编成一个不透明字符串。
+
+        为什么不直接把两个值拼在 query 里（``?t=..&id=..``）：
+        前端拼字符串的地方越多，漏 encode 的机会越大（isoformat 里有
+        ``+`` 和 ``:``，进 URL 会被解释成空格或截断）。
+        base64url 只有 ``A-Za-z0-9-_``，可以直接拼，不需要 encodeURIComponent。
+        """
+        raw = f'{obj.create_time.isoformat()}{self._CURSOR_SEP}{obj.id}'
+        return base64.urlsafe_b64encode(raw.encode()).decode().rstrip('=')
+
+    def _decode_cursor(self, raw: str):
+        """解析游标，返回 ``(datetime, id)``；任何异常都返回 ``None``。
+
+        不抛异常是刻意的：游标来自 URL，用户完全可能手改或复制残缺。
+        解析失败就当「没传游标」退回第一页，比 500 友好。
+        """
+        if not raw or len(raw) > 200:
+            # 长度上限防一个超长字符串把 base64 解码拖住
+            return None
+        try:
+            # 编码时去掉了 '=' padding，解码要补回来
+            padded = raw + '=' * (-len(raw) % 4)
+            decoded = base64.urlsafe_b64decode(padded).decode()
+            ts_raw, pk_raw = decoded.split(self._CURSOR_SEP)
+            return datetime.fromisoformat(ts_raw), int(pk_raw)
+        except (ValueError, TypeError, UnicodeDecodeError):
+            return None
+
+    def _page_size(self, request) -> int:
+        """读 ``?page_size=``，夹在 [1, MAX_PAGE_SIZE] 之间。
+
+        解析失败一律退回默认值而不是报 400：这是首页，为了一个可选参数
+        整页白屏不值得。
+        """
+        raw = request.query_params.get('page_size')
+        try:
+            size = int(raw)
+        except (TypeError, ValueError):
+            return self.DEFAULT_PAGE_SIZE
+        return max(1, min(size, self.MAX_PAGE_SIZE))
+
+    def _page_size(self, request) -> int:
+        """读 ``?page_size=``，夹在 [1, MAX_PAGE_SIZE] 之间。
+
+        解析失败一律退回默认值而不是报 400：这是首页，为了一个可选参数
+        整页白屏不值得。
+        """
+        raw = request.query_params.get('page_size')
+        try:
+            size = int(raw)
+        except (TypeError, ValueError):
+            return self.DEFAULT_PAGE_SIZE
+        return max(1, min(size, self.MAX_PAGE_SIZE))
 
 
 # ============================================================
