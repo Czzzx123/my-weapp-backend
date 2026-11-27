@@ -222,14 +222,16 @@ def notify_checkin(enrollment, lesson_date, session, remain: int) -> bool:
         logger.info('学生 %s 没有绑定带 openid 的家长，跳过通知', enrollment.student.name)
         return False
 
-    # 模板字段名必须与公众平台里选的模板完全一致。
-    # 这里用「上课提醒」类模板的常见字段名，实际以你选的模板为准，
-    # 不一致会报 47003（参数不匹配）。
+    # 字段名必须与公众平台里该模板的定义**逐字一致**，否则 47003。
+    # 下面这组是 2026-11-27 从账号实际模板读出来的，不是猜的：
+    #   签到通知 → 签到人:{{name2}} 课程名称:{{thing4}}
+    #              上课时间:{{time18}} 剩余课时:{{number7}}
+    # number 类型只能放纯数字，「已签到，剩余 8 课时」这种整句会直接被拒。
     data = {
-        'thing1': {'value': _clip(enrollment.student.name, 20)},
-        'thing2': {'value': _clip(session.course_class.name, 20)},
-        'time3': {'value': _fmt_time(lesson_date, session)},
-        'thing4': {'value': _clip(f'已签到，剩余 {remain} 课时', 20)},
+        'name2': {'value': _clip(enrollment.student.name, 10)},
+        'thing4': {'value': _clip(session.course_class.name, 20)},
+        'time18': {'value': _fmt_time(lesson_date, session)},
+        'number7': {'value': str(max(0, int(remain)))},
     }
 
     ok = False
@@ -273,13 +275,20 @@ def notify_before_class(parent, student, session,
     if not template_id:
         return False, -1, '未配置 WECHAT_TEMPLATE_BEFORE_CLASS'
 
+    # 字段名同签到：2026-11-27 从账号实际模板读出来的。
+    #   上课提醒 → 课程名称:{{thing1}} 上课时间:{{time5}}
+    #              上课学生:{{name10}} 剩余课时:{{number21}}
+    #
+    # 注意 thing1 是**课程名称**不是学生名 —— 两个模板的 thing1 含义不同，
+    # 复制粘贴改字段时最容易在这里串。学生名在 name10。
+    #
+    # 原实现把「还有 8 课时，请准时到校」塞进 thing4，现在没有这样的自由文本
+    # 字段了（4 个字段全是结构化数据），文案只能靠模板本身表达。
     data = {
-        'thing1': {'value': _clip(student.name, 20)},
-        'thing2': {'value': _clip(session.course_class.name, 20)},
-        'time3': {'value': _fmt_time(lesson_date, session)},
-        'thing4': {'value': _clip(
-            f'还有{remain}课时，请准时到校' if remain > 0 else '课时不足，请先充值',
-            20)},
+        'thing1': {'value': _clip(session.course_class.name, 20)},
+        'time5': {'value': _fmt_time(lesson_date, session)},
+        'name10': {'value': _clip(student.name, 10)},
+        'number21': {'value': str(max(0, int(remain)))},
     }
 
     try:

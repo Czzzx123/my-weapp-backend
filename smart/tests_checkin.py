@@ -471,15 +471,36 @@ class NotifyConfigTests(SimpleTestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()['code'], 100)
 
-    @override_settings(WECHAT_TEMPLATE_CHECKIN='')
+    @override_settings(WECHAT_TEMPLATE_CHECKIN='', WECHAT_TEMPLATE_BEFORE_CLASS='')
     def test_disabled_when_template_missing(self):
-        """模板没配时 enabled=false，前端据此隐藏按钮。"""
+        """两个模板都没配时 enabled=false，前端据此隐藏按钮。
+
+        必须**同时**清空两个：``enabled`` 是「有没有任何一个可用模板」，
+        只清空一个时另一个仍能让它成立。2026-11-27 配了真实模板 id 后，
+        原来只清签到模板的写法开始误报，因此这里补上上课提醒。
+        """
         body = self.client.get('/smart/notify_config/').json()
         self.assertEqual(body['template_id'], '')
         self.assertFalse(body['enabled'])
+        self.assertEqual(body['tmpl_ids'], [])
 
     @override_settings(WECHAT_TEMPLATE_CHECKIN='TPL_abc123')
     def test_returns_template_when_configured(self):
         body = self.client.get('/smart/notify_config/').json()
         self.assertEqual(body['template_id'], 'TPL_abc123')
+        self.assertTrue(body['enabled'])
+        self.assertIn('TPL_abc123', body['tmpl_ids'])
+
+    @override_settings(
+        WECHAT_TEMPLATE_CHECKIN='',
+        WECHAT_TEMPLATE_BEFORE_CLASS='TPL_before456')
+    def test_enabled_by_before_class_alone(self):
+        """只配了上课提醒也算可用 —— 家长仍然能授权，提醒能发出去。
+
+        不能因为「签到通知没配」就整个隐藏授权入口，
+        否则上课提醒这个更要紧的功能也跟着废了。
+        """
+        body = self.client.get('/smart/notify_config/').json()
+        self.assertEqual(body['template_id'], '')
+        self.assertEqual(body['tmpl_ids'], ['TPL_before456'])
         self.assertTrue(body['enabled'])
